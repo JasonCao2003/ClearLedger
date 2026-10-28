@@ -1,170 +1,282 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { NButton } from 'naive-ui'
-import { getOverview, type Overview } from '../api/ledger'
+import { getOverview, listTransactionYears, type Overview } from '../api/ledger'
 import { formatMoney, todayShanghai } from '../composables/money'
-import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  RotateCcw,
-  Scale,
-  ReceiptText,
-  ShieldCheck,
-} from 'lucide-vue-next'
-const month = ref(todayShanghai().slice(0, 7))
+import { ArrowUpRight, RotateCcw, Scale, ShieldCheck } from 'lucide-vue-next'
+import MonthlyExpenseChart from '../components/MonthlyExpenseChart.vue'
+import CategorySpendingChart from '../components/CategorySpendingChart.vue'
+
+const router = useRouter()
+const today = todayShanghai()
+const currentYear = today.slice(0, 4)
+const currentMonth = today.slice(5, 7)
+const year = ref(currentYear)
+const month = ref(currentMonth)
+const years = ref<string[]>([])
 const report = ref<Overview | null>(null)
 const busy = ref(false)
 const error = ref('')
+let requestVersion = 0
+
+const months = Array.from({ length: 12 }, (_, index) =>
+  String(index + 1).padStart(2, '0'),
+)
+const yearOptions = computed(() =>
+  [...new Set([year.value, currentYear, ...years.value])]
+    .filter(Boolean)
+    .sort()
+    .reverse(),
+)
+const selectedMonth = computed(() => `${year.value}-${month.value}`)
+
+async function loadYears() {
+  const result = await listTransactionYears()
+  if (result.ok) years.value = result.data
+}
+
 async function refresh() {
-  if (busy.value) return
+  const version = ++requestVersion
   busy.value = true
-  report.value = null
   error.value = ''
   try {
-    const result = await getOverview(month.value)
+    const result = await getOverview(`${year.value}-${month.value}`)
+    if (version !== requestVersion) return
     if (result.ok) report.value = result.data
     else error.value = result.error.message
   } finally {
-    busy.value = false
+    if (version === requestVersion) busy.value = false
   }
 }
-onMounted(() => {
+
+function changeYear(value: string) {
+  month.value = value === currentYear ? currentMonth : '12'
+}
+
+watch([year, month], () => {
   void refresh()
 })
+
+onMounted(() => {
+  void loadYears()
+  void refresh()
+})
+
+const annual = computed(() => {
+  const initial = {
+    income: 0n,
+    expense: 0n,
+    refund: 0n,
+    netExpense: 0n,
+    balance: 0n,
+    confirmed: 0,
+    pending: 0,
+  }
+  return (report.value?.monthly ?? []).reduce((total, item) => {
+    total.income += BigInt(item.incomeMinor)
+    total.expense += BigInt(item.expenseMinor)
+    total.refund += BigInt(item.refundMinor)
+    total.netExpense += BigInt(item.netExpenseMinor)
+    total.balance += BigInt(item.balanceMinor)
+    total.confirmed += item.confirmedCount
+    total.pending += item.pendingCount
+    return total
+  }, initial)
+})
+
 const metrics = computed(() => [
   {
-    name: '收入',
-    value: report.value?.incomeMinor,
-    caption: '期间确认收入',
-    icon: ArrowDownLeft,
-    tone: 'green',
+    name: '总支出',
+    value: annual.value.netExpense.toString(),
+    caption: '消费扣除退款后的净支出',
+    tone: 'blue',
+    icon: ArrowUpRight,
   },
   {
     name: '消费支出',
-    value: report.value?.expenseMinor,
-    caption: '退款前的消费金额',
-    icon: ArrowUpRight,
-    tone: 'blue',
+    value: annual.value.expense.toString(),
+    caption: '退款前消费金额',
+    tone: 'orange',
+    icon: RotateCcw,
   },
   {
     name: '退款',
-    value: report.value?.refundMinor,
-    caption: '按退款发生日计入',
+    value: annual.value.refund.toString(),
+    caption: '按退款发生日冲减',
+    tone: 'green',
     icon: RotateCcw,
-    tone: 'orange',
   },
   {
     name: '期间结余',
-    value: report.value?.balanceMinor,
+    value: annual.value.balance.toString(),
     caption: '收入减去净支出',
-    icon: Scale,
     tone: 'purple',
+    icon: Scale,
   },
 ])
+
+const hasCategoryData = computed(
+  () => (report.value?.categorySpending.length ?? 0) > 0,
+)
+
+function openMonth(value: string) {
+  void router.push({ path: '/monthly', query: { month: value } })
+}
 </script>
+
 <template>
-  <section class="summary-strip">
+  <section class="summary-strip overview-heading">
     <div>
-      <span class="section-kicker">账本概况</span>
-      <p>已确认手工交易 · {{ month || '全部日期' }}</p>
+      <span class="section-kicker">年度账本</span>
+      <p>{{ year || '—' }} 年支出总览</p>
     </div>
-    <form class="filter-bar" @submit.prevent="refresh">
+    <div class="overview-controls">
       <label
-        >月份<input
-          v-model="month"
-          type="month"
-          min="0001-01"
-          max="9999-12"
-          :disabled="busy"
-          @change="refresh" /></label
-      ><n-button attr-type="submit" :loading="busy">刷新</n-button>
-    </form>
+        >年份<select v-model="year" @change="changeYear(year)">
+          <option v-for="option in yearOptions" :key="option" :value="option">
+            {{ option }} 年
+          </option>
+        </select></label
+      >
+      <label
+        >分类月份<select v-model="month">
+          <option v-for="option in months" :key="option" :value="option">
+            {{ Number(option) }} 月
+          </option>
+        </select></label
+      >
+      <span class="muted small-text" role="status" aria-live="polite">{{
+        busy ? '正在汇总…' : '更换条件后自动更新'
+      }}</span>
+    </div>
   </section>
+
   <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-  <section class="metric-grid" aria-label="收支概况">
+
+  <section class="metric-grid" aria-label="年度支出概况" :aria-busy="busy">
     <article v-for="metric in metrics" :key="metric.name" class="metric-card">
       <div class="metric-top">
-        <span>{{ metric.name }}</span
-        ><span class="metric-icon" :class="metric.tone"
-          ><component :is="metric.icon" :size="18" aria-hidden="true"
-        /></span>
+        <span>{{ metric.name }}</span>
+        <span class="metric-icon" :class="metric.tone">
+          <component :is="metric.icon" :size="18" aria-hidden="true" />
+        </span>
       </div>
-      <strong class="metric-value"
-        >{{ metric.value === undefined ? '—' : formatMoney(metric.value)
-        }}<small>CNY</small></strong
-      >
+      <strong class="metric-value">
+        {{ report ? formatMoney(metric.value) : '—' }}
+        <small>CNY</small>
+      </strong>
       <p>{{ metric.caption }}</p>
     </article>
   </section>
-  <p v-if="report" class="report-note" role="status">
-    已确认 {{ report.confirmedCount }} 笔 · 待核实
-    {{ report.pendingCount }} 笔（不计收支） · 净支出
-    {{ formatMoney(report.netExpenseMinor) }}
-    元。仅反映手工记录，不表示账单覆盖完整。<router-link
-      :to="{ path: '/transactions', query: { month } }"
-      class="text-link"
-      >查看当期明细 →</router-link
-    >
-  </p>
-  <div class="overview-grid">
-    <section class="panel">
-      <div class="panel-heading">
-        <h2>收支趋势</h2>
-        <span class="muted">月度视图</span>
+
+  <section class="panel chart-panel monthly-chart-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>月度支出</h2>
+        <p class="muted small-text">
+          {{ year || '—' }} 年各月净支出，点击柱形查看当月明细
+        </p>
       </div>
-      <div class="chart-empty">
-        <div class="empty-chart" aria-hidden="true">
-          <i /><i /><i /><i /><i /><i /><i />
+      <button
+        type="button"
+        class="text-link compact-link detail-link"
+        @click="openMonth(selectedMonth)"
+      >
+        查看月度支出页
+      </button>
+    </div>
+    <MonthlyExpenseChart
+      v-if="report"
+      :items="report.monthly"
+      :year="year"
+      :selected="selectedMonth"
+      :busy="busy"
+      @select="openMonth"
+    />
+    <div v-else class="chart-empty">
+      <p>{{ busy ? '正在汇总月度支出…' : '暂无可展示的月度支出。' }}</p>
+    </div>
+  </section>
+
+  <div class="overview-grid">
+    <section class="panel category-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>分类支出</h2>
+          <p class="muted small-text">{{ selectedMonth }} · 消费退款前金额</p>
         </div>
-        <h3>趋势图待接入</h3>
-        <p>上方指标已接入真实汇总，月度趋势将在后续提供。</p>
+        <button
+          type="button"
+          class="text-link compact-link detail-link"
+          @click="openMonth(selectedMonth)"
+        >
+          查看月明细
+        </button>
+      </div>
+      <CategorySpendingChart
+        v-if="hasCategoryData"
+        :items="report!.categorySpending"
+        :total-minor="report!.expenseMinor"
+      />
+      <div v-else class="compact-empty">
+        <p>{{ busy ? '正在汇总分类支出…' : '当月暂无已确认消费。' }}</p>
+        <router-link to="/transactions" class="text-link"
+          >前往交易明细记录一笔</router-link
+        >
       </div>
     </section>
-    <section class="panel">
+
+    <section class="panel chart-panel facts-panel">
       <div class="panel-heading">
-        <h2>开始使用</h2>
-        <span class="subtle-tag">开发中</span>
+        <div>
+          <h2>本月概况</h2>
+          <p class="muted small-text">{{ selectedMonth }}</p>
+        </div>
       </div>
-      <ol class="getting-started">
-        <li>
-          <span>01</span>
-          <div>
-            <h3>建立基础账本</h3>
-            <p>桌面启动时创建本地 SQLite 数据库。</p>
-          </div>
-        </li>
-        <li>
-          <span>02</span>
-          <div>
-            <h3>开始手工记账</h3>
-            <p>
-              <router-link to="/transactions" class="text-link"
-                >新增、编辑或核实一笔交易 →</router-link
-              >
-            </p>
-          </div>
-        </li>
-        <li>
-          <span>03</span>
-          <div>
-            <h3>核对后查看统计</h3>
-            <p>保留来源凭证，不确定记录单独核实。</p>
-          </div>
-        </li>
-      </ol>
-      <router-link to="/settings" class="text-link"
-        >查看本地服务状态 →</router-link
+      <dl class="month-facts">
+        <div>
+          <dt>消费支出</dt>
+          <dd>{{ report ? formatMoney(report.expenseMinor) : '—' }}</dd>
+        </div>
+        <div>
+          <dt>退款</dt>
+          <dd>{{ report ? formatMoney(report.refundMinor) : '—' }}</dd>
+        </div>
+        <div>
+          <dt>净支出</dt>
+          <dd>{{ report ? formatMoney(report.netExpenseMinor) : '—' }}</dd>
+        </div>
+        <div>
+          <dt>已确认 / 待核实</dt>
+          <dd>
+            {{
+              report
+                ? `${report.confirmedCount} / ${report.pendingCount} 笔`
+                : '—'
+            }}
+          </dd>
+        </div>
+      </dl>
+      <n-button block :disabled="busy" @click="openMonth(selectedMonth)"
+        >打开月度支出</n-button
       >
     </section>
   </div>
+
+  <p v-if="report" class="report-note" role="status">
+    {{ year }} 年已确认 {{ annual.confirmed }} 笔，待核实 {{ annual.pending }}
+    笔；待核实交易不计入收支。净支出
+    {{ formatMoney(annual.netExpense.toString()) }} 元。
+  </p>
+
   <section class="panel principles">
     <div>
       <ShieldCheck :size="22" aria-hidden="true" />
       <div>
-        <h3>数据有来源，统计有口径</h3>
-        <p>原始凭证与记账交易分开保存，跨渠道同一消费只计一次。</p>
+        <h3>统计口径</h3>
+        <p>只汇总已确认交易；退款按发生日冲减，转账及借贷本金不计收支。</p>
       </div>
     </div>
-    <ReceiptText :size="26" class="muted" aria-hidden="true" />
   </section>
 </template>

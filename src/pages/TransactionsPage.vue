@@ -1,24 +1,58 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import { NButton, NModal } from 'naive-ui'
 import EntryEditor from '../components/EntryEditor.vue'
 import { desktopAvailable } from '../api/client'
 import {
+  confirmEntries,
   listEntries,
+  listTransactionYears,
   natureLabel,
   natures,
   voidEntry,
   type Entry,
 } from '../api/ledger'
-import { formatMoney } from '../composables/money'
+import { formatMoney, todayShanghai } from '../composables/money'
 const route = useRoute()
+const today = todayShanghai()
+const currentYear = today.slice(0, 4)
+const currentMonth = today.slice(0, 7)
+const routeMonth =
+  typeof route.query.month === 'string' &&
+  /^\d{4}-(0[1-9]|1[0-2])$/.test(route.query.month)
+    ? route.query.month
+    : currentMonth
 const query = reactive({
-  month: typeof route.query.month === 'string' ? route.query.month : '',
+  year:
+    typeof route.query.year === 'string' && /^\d{4}$/.test(route.query.year)
+      ? route.query.year
+      : routeMonth.slice(0, 4),
+  month: routeMonth.slice(5, 7),
   nature: '',
-  keyword: '',
+  keyword: typeof route.query.keyword === 'string' ? route.query.keyword : '',
 })
-const applied = ref({ ...query })
+const months = Array.from({ length: 12 }, (_, index) =>
+  String(index + 1).padStart(2, '0'),
+)
+const years = ref<string[]>([])
+// Keep the selected and current years selectable even when no entry falls in them.
+const yearOptions = computed(() =>
+  [...new Set([query.year, currentYear, ...years.value])]
+    .filter(Boolean)
+    .sort()
+    .reverse(),
+)
+let yearsVersion = 0
+async function loadYears() {
+  const version = ++yearsVersion
+  const result = await listTransactionYears()
+  if (version !== yearsVersion) return
+  if (result.ok) years.value = result.data
+}
+function onYearChange() {
+  if (!query.year) query.month = ''
+}
 const entries = ref<Entry[]>([])
 const busy = ref(false)
 const error = ref('')
@@ -34,8 +68,98 @@ const voiding = ref<Entry | null>(null)
 const voidReason = ref('')
 const voidBusy = ref(false)
 const voidError = ref('')
+const selected = ref<Set<string>>(new Set())
+const confirming = ref(false)
+const confirmError = ref('')
+const confirmable = () =>
+  entries.value.filter(
+    (entry) => entry.reviewStatus === 'pending' && entry.nature !== 'unknown',
+  )
+const selectedEntries = computed(() =>
+  entries.value.filter((entry) => selected.value.has(entry.id)),
+)
+const selectedPendingCount = computed(
+  () =>
+    selectedEntries.value.filter(
+      (entry) => entry.nature !== 'unknown' && entry.reviewStatus === 'pending',
+    ).length,
+)
+const allConfirmableSelected = computed(() => {
+  const targets = confirmable()
+  return (
+    targets.length > 0 && targets.every((entry) => selected.value.has(entry.id))
+  )
+})
+const someConfirmableSelected = computed(
+  () => selectedEntries.value.length > 0 && !allConfirmableSelected.value,
+)
+function pruneSelection() {
+  const ids = new Set(entries.value.map((entry) => entry.id))
+  selected.value = new Set([...selected.value].filter((id) => ids.has(id)))
+}
+function toggleRow(entry: Entry) {
+  const next = new Set(selected.value)
+  if (next.has(entry.id)) next.delete(entry.id)
+  else next.add(entry.id)
+  selected.value = next
+}
+function toggleAll() {
+  const next = new Set(selected.value)
+  const targets = confirmable()
+  if (allConfirmableSelected.value) {
+    for (const entry of targets) next.delete(entry.id)
+  } else {
+    for (const entry of targets) next.add(entry.id)
+  }
+  selected.value = next
+}
+async function confirmOne(entry: Entry) {
+  await runConfirm([entry])
+}
+async function confirmSelected() {
+  await runConfirm(selectedEntries.value)
+}
+async function runConfirm(targets: Entry[]) {
+  if (confirming.value || busy.value) return
+  const pendingTargets = targets.filter(
+    (entry) => entry.reviewStatus === 'pending' && entry.nature !== 'unknown',
+  )
+  if (!pendingTargets.length) {
+    confirmError.value =
+      '所选交易均已确认，或性质仍为“待核实性质”，请先编辑填写性质。'
+    return
+  }
+  const skipped = targets.length - pendingTargets.length
+  if (
+    !window.confirm(
+      `确认核实 ${pendingTargets.length} 笔交易？` +
+        (skipped ? `其余 ${skipped} 笔将跳过。` : '') +
+        '核实后将计入正式收支。',
+    )
+  )
+    return
+  confirmError.value = ''
+  confirming.value = true
+  try {
+    const result = await confirmEntries({
+      requestId: crypto.randomUUID(),
+      entries: pendingTargets.map((entry) => ({
+        id: entry.id,
+        expectedRevision: entry.revision,
+      })),
+    })
+    if (result.ok) {
+      selected.value = new Set()
+      notice.value = `已核实 ${result.data.length} 笔交易。`
+      await load()
+    } else
+      confirmError.value = `${result.error.message}（${result.error.code}）`
+  } finally {
+    confirming.value = false
+  }
+}
 onBeforeRouteLeave(() => {
-  if (voidBusy.value) return false
+  if (voidBusy.value || confirming.value) return false
   if (editorOpen.value) return editor.value?.canLeave() ?? false
   return (
     !voiding.value ||
@@ -44,25 +168,45 @@ onBeforeRouteLeave(() => {
   )
 })
 function resetFilters() {
-  Object.assign(query, { month: '', nature: '', keyword: '' })
-  void load()
+  const changed =
+    query.year !== currentYear ||
+    query.month !== currentMonth.slice(5, 7) ||
+    !!query.nature ||
+    !!query.keyword
+  Object.assign(query, {
+    year: currentYear,
+    month: currentMonth.slice(5, 7),
+    nature: '',
+    keyword: '',
+  })
+  if (!changed) void load()
 }
 let voidSignature = ''
 let voidRequestId = ''
+let requestVersion = 0
 async function load(more = false) {
-  if (busy.value) return
+  if (more && (busy.value || !cursor.value.cursorId)) return
+  const version = ++requestVersion
+  const filters = {
+    year: query.year,
+    month: query.month ? `${query.year}-${query.month}` : '',
+    nature: query.nature,
+    keyword: query.keyword.trim(),
+  }
   if (!more) {
-    applied.value = { ...query }
     entries.value = []
+    selected.value = new Set()
     cursor.value = { cursorDate: null, cursorId: null }
   }
   error.value = ''
   busy.value = true
   try {
     const result = await listEntries({
-      ...applied.value,
+      ...filters,
       ...(more ? cursor.value : {}),
     })
+    // Conditions can change while an older IPC request is still running.
+    if (version !== requestVersion) return
     if (result.ok) {
       entries.value = more
         ? [...entries.value, ...result.data.items]
@@ -71,11 +215,21 @@ async function load(more = false) {
         cursorDate: result.data.nextCursorDate,
         cursorId: result.data.nextCursorId,
       }
+      pruneSelection()
     } else error.value = `${result.error.message}（${result.error.code}）`
   } finally {
-    busy.value = false
+    if (version === requestVersion) busy.value = false
   }
 }
+watch(
+  () => [query.year, query.month, query.nature, query.keyword] as const,
+  () => {
+    void load()
+  },
+)
+onBeforeUnmount(() => {
+  ++requestVersion
+})
 function edit(entry: Entry | null) {
   editing.value = entry
   editorOpen.value = true
@@ -118,6 +272,7 @@ async function confirmVoid() {
 }
 onMounted(() => {
   void load()
+  if (desktopAvailable) void loadYears()
 })
 </script>
 <template>
@@ -136,16 +291,22 @@ onMounted(() => {
         >记一笔</n-button
       >
     </div>
-    <form class="filter-bar" @submit.prevent="load()">
+    <div class="filter-bar" role="search" aria-label="交易明细筛选">
       <label
-        >月份<input
-          v-model="query.month"
-          type="month"
-          :disabled="busy"
-          min="0001-01"
-          max="9999-12" /></label
+        >年份<select v-model="query.year" @change="onYearChange">
+          <option v-for="year in yearOptions" :key="year" :value="year">
+            {{ year }} 年
+          </option>
+        </select></label
       ><label
-        >性质<select v-model="query.nature" :disabled="busy">
+        >月份<select v-model="query.month" :disabled="!query.year">
+          <option value="">全年</option>
+          <option v-for="month in months" :key="month" :value="month">
+            {{ Number(month) }} 月
+          </option>
+        </select></label
+      ><label
+        >性质<select v-model="query.nature">
           <option value="">全部性质</option>
           <option
             v-for="nature in natures"
@@ -160,16 +321,58 @@ onMounted(() => {
           v-model="query.keyword"
           maxlength="200"
           placeholder="商户、分类、备注"
-          :disabled="busy" /></label
-      ><n-button attr-type="submit" :loading="busy">查询</n-button
-      ><n-button :disabled="busy" @click="resetFilters">重置</n-button>
-    </form>
+          aria-describedby="transaction-filter-status" /></label
+      ><n-button @click="resetFilters">重置</n-button>
+      <span
+        id="transaction-filter-status"
+        class="muted small-text"
+        role="status"
+        aria-live="polite"
+        >{{ busy ? '正在筛选…' : '筛选条件变更后自动更新' }}</span
+      >
+    </div>
     <p v-if="notice" class="success-note" role="status">{{ notice }}</p>
     <div v-if="error" class="form-error" role="alert">{{ error }}</div>
+    <div v-if="confirmError" class="form-error" role="alert">
+      {{ confirmError }}
+    </div>
+    <div
+      v-if="selectedEntries.length"
+      class="bulk-bar"
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        >已选 {{ selectedEntries.length }} 笔，其中待核实
+        {{ selectedPendingCount }} 笔</span
+      ><n-button
+        size="small"
+        type="primary"
+        :loading="confirming"
+        :disabled="busy"
+        @click="confirmSelected"
+        >批量核实</n-button
+      ><n-button
+        size="small"
+        :disabled="busy || confirming"
+        @click="selected = new Set()"
+        >清除选择</n-button
+      >
+    </div>
     <div class="table-scroll" :aria-busy="busy">
       <table class="entry-table">
         <thead>
           <tr>
+            <th class="select-cell">
+              <input
+                type="checkbox"
+                aria-label="选择本页全部可核实交易"
+                :checked="allConfirmableSelected"
+                :indeterminate="someConfirmableSelected"
+                :disabled="busy || !confirmable().length"
+                @change="toggleAll"
+              />
+            </th>
             <th>日期</th>
             <th>商户 / 对方</th>
             <th>性质</th>
@@ -180,7 +383,23 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="entry in entries" :key="entry.id">
+          <tr
+            v-for="entry in entries"
+            :key="entry.id"
+            :class="{ 'row-selected': selected.has(entry.id) }"
+          >
+            <td class="select-cell">
+              <input
+                type="checkbox"
+                :aria-label="`选择 ${entry.merchant || entry.businessDate}`"
+                :checked="selected.has(entry.id)"
+                :disabled="busy || entry.reviewStatus !== 'pending'"
+                :title="
+                  entry.reviewStatus !== 'pending' ? '该交易已确认' : undefined
+                "
+                @change="toggleRow(entry)"
+              />
+            </td>
             <td>{{ entry.businessDate }}</td>
             <td class="merchant-cell">
               <strong>{{ entry.merchant || '未填写' }}</strong
@@ -203,6 +422,23 @@ onMounted(() => {
                   >编辑</n-button
                 ><n-button
                   size="small"
+                  :disabled="
+                    busy ||
+                    confirming ||
+                    entry.reviewStatus !== 'pending' ||
+                    entry.nature === 'unknown'
+                  "
+                  :title="
+                    entry.reviewStatus !== 'pending'
+                      ? '该交易已确认'
+                      : entry.nature === 'unknown'
+                        ? '请先编辑填写确切性质'
+                        : undefined
+                  "
+                  @click="confirmOne(entry)"
+                  >核实</n-button
+                ><n-button
+                  size="small"
                   :disabled="busy || voidBusy"
                   @click="beginVoid(entry)"
                   >作废</n-button
@@ -219,7 +455,7 @@ onMounted(() => {
           ? '正在读取交易…'
           : error
             ? '交易读取失败，请重试。'
-            : '暂无符合条件的交易。'
+            : '暂无符合条件的交易，可调整年份、月份、性质或搜索词。'
       }}
     </div>
     <div class="list-footer">

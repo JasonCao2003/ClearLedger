@@ -4,6 +4,7 @@ import { NModal, NButton } from 'naive-ui'
 import {
   natures,
   saveEntry,
+  spendingCategories,
   type Entry,
   type Nature,
   type SaveEntry,
@@ -184,10 +185,18 @@ async function submit() {
         <label
           >分类<input
             v-model="form.category"
+            list="ledger-category-options"
             maxlength="80"
             :disabled="busy"
-            placeholder="如：餐饮、日用购物"
-        /></label>
+            placeholder="如：餐饮、日用" /><datalist
+            id="ledger-category-options"
+          >
+            <option
+              v-for="category in spendingCategories"
+              :key="category"
+              :value="category"
+            /></datalist
+        ></label>
       </div>
       <label
         >备注<textarea
@@ -198,7 +207,7 @@ async function submit() {
         />
       </label>
       <p class="muted">
-        退款冲减退款当期支出；本人转账、本金还款和借贷往来不计入收支。待核实交易不计入正式汇总。退款关联原订单将在后续接入。
+        退款冲减退款当期支出；本人转账、本金还款和借贷往来不计入收支。待核实交易不计入正式汇总。来源退款可在“待核实”页扫描关联；口径未通过的关联组暂停计入，手工交易暂不具备自动匹配的订单标识。
       </p>
       <div class="form-actions">
         <n-button :disabled="busy" @click="close">取消</n-button

@@ -8,6 +8,12 @@ export const navigation = [
     icon: 'overview',
   },
   {
+    path: '/monthly',
+    label: '月度支出',
+    subtitle: '逐月查看支出走势与每日明细',
+    icon: 'monthly',
+  },
+  {
     path: '/transactions',
     label: '交易明细',
     subtitle: '管理交易，追溯每一条原始凭证',
@@ -55,16 +61,20 @@ export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/', component: () => import('../pages/OverviewPage.vue') },
+    { path: '/monthly', component: () => import('../pages/MonthlyPage.vue') },
     {
       path: '/transactions',
       component: () => import('../pages/TransactionsPage.vue'),
     },
+    { path: '/review', component: () => import('../pages/ReviewPage.vue') },
     ...navigation
       .filter(
         (item) =>
           item.path !== '/' &&
           item.path !== '/settings' &&
-          item.path !== '/transactions',
+          item.path !== '/transactions' &&
+          item.path !== '/monthly' &&
+          item.path !== '/review',
       )
       .map((item) => ({
         path: item.path,

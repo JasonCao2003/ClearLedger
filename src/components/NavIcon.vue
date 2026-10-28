@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
+  ChartColumn,
   LayoutDashboard,
   ReceiptText,
   Upload,
@@ -13,6 +14,7 @@ import {
 const props = defineProps<{ name: string }>()
 const icons = {
   overview: LayoutDashboard,
+  monthly: ChartColumn,
   transactions: ReceiptText,
   imports: Upload,
   review: ScanLine,
