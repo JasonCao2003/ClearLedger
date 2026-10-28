@@ -7,12 +7,16 @@ use std::{
 };
 
 pub mod ledger;
-const SCHEMA_VERSION: i64 = 2;
+pub mod refunds;
+#[cfg(test)]
+mod refunds_tests;
+const SCHEMA_VERSION: i64 = 3;
 const INITIAL_SCHEMA: &str = include_str!("../../../migrations/0001_initial.sql");
 
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
+    refund_fingerprint: Arc<Mutex<Option<(i64, i64, i64)>>>,
     path: PathBuf,
 }
 
@@ -56,11 +60,20 @@ impl Database {
             let transaction = connection.transaction()?;
             transaction
                 .execute_batch(include_str!("../../../migrations/0002_manual_ledger.sql"))?;
-            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            transaction.pragma_update(None, "user_version", 2)?;
+            transaction.commit()?;
+        }
+        if version < 3 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(include_str!(
+                "../../../migrations/0003_refund_reconciliation.sql"
+            ))?;
+            transaction.pragma_update(None, "user_version", 3)?;
             transaction.commit()?;
         }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            refund_fingerprint: Arc::new(Mutex::new(None)),
             path,
         })
     }
@@ -98,7 +111,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("ledger-test-{}", uuid::Uuid::new_v4()));
         {
             let database = Database::open(&directory).unwrap();
-            assert_eq!(database.status().unwrap().schema_version, 2);
+            assert_eq!(database.status().unwrap().schema_version, 3);
             let connection = database.connection.lock().unwrap();
             let foreign_keys: i64 = connection
                 .pragma_query_value(None, "foreign_keys", |r| r.get(0))

@@ -40,9 +40,24 @@ pub struct VoidEntry {
     pub reason: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfirmEntries {
+    pub request_id: String,
+    pub entries: Vec<ConfirmItem>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfirmItem {
+    pub id: String,
+    pub expected_revision: i64,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntryQuery {
+    pub year: String,
     pub month: String,
     pub nature: String,
     pub keyword: String,
@@ -68,6 +83,60 @@ pub struct Overview {
     pub balance_minor: String,
     pub confirmed_count: u64,
     pub pending_count: u64,
+    pub monthly: Vec<MonthlyOverview>,
+    pub category_spending: Vec<CategorySpending>,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyOverview {
+    pub month: String,
+    pub income_minor: String,
+    pub expense_minor: String,
+    pub refund_minor: String,
+    pub net_expense_minor: String,
+    pub balance_minor: String,
+    pub confirmed_count: u64,
+    pub pending_count: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategorySpending {
+    pub category: String,
+    pub amount_minor: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthDetail {
+    pub month: String,
+    pub days: Vec<DailySpending>,
+    pub totals: MonthDetailTotals,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySpending {
+    pub date: String,
+    pub income_minor: String,
+    pub expense_minor: String,
+    pub refund_minor: String,
+    pub net_expense_minor: String,
+    pub pending_count: u64,
+    pub categories: std::collections::BTreeMap<String, String>,
+    pub memo: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthDetailTotals {
+    pub income_minor: String,
+    pub expense_minor: String,
+    pub refund_minor: String,
+    pub net_expense_minor: String,
+    pub pending_count: u64,
+    pub categories: std::collections::BTreeMap<String, String>,
 }
 
 pub fn validate_date(value: &str) -> Result<(), AppError> {
@@ -164,8 +233,33 @@ pub fn validate_request(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+impl ConfirmEntries {
+    pub fn validate(&self) -> Result<(), AppError> {
+        validate_request(&self.request_id)?;
+        if self.entries.is_empty() || self.entries.len() > 200 {
+            return Err(AppError::Validation("请选择 1 至 200 笔交易。"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for item in &self.entries {
+            if item.id.trim().is_empty()
+                || item.expected_revision < 1
+                || !seen.insert(item.id.as_str())
+            {
+                return Err(AppError::Validation("待核实交易清单无效。"));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl EntryQuery {
     pub fn validate(&self) -> Result<(), AppError> {
+        if !self.year.is_empty() {
+            if self.year.len() != 4 {
+                return Err(AppError::Validation("年份格式无效。"));
+            }
+            validate_date(&format!("{}-01-01", self.year))?;
+        }
         if !self.month.is_empty() {
             if self.month.len() != 7 {
                 return Err(AppError::Validation("月份格式无效。"));

@@ -22,8 +22,14 @@ pub fn run() {
             commands::get_app_status,
             commands::save_transaction,
             commands::void_transaction,
+            commands::confirm_transactions,
             commands::list_transactions,
-            commands::get_overview
+            commands::list_transaction_years,
+            commands::get_overview,
+            commands::get_month_detail,
+            commands::scan_refunds,
+            commands::get_refund_report,
+            commands::reject_refund_link
         ])
         .run(tauri::generate_context!())
         .expect("Unable to start ledger desktop");
