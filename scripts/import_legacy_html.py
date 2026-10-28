@@ -250,8 +250,8 @@ def apply_import(html_path, database_path, report_path=None):
         connection.execute('PRAGMA foreign_keys=ON')
         connection.execute('PRAGMA synchronous=FULL')
         version = connection.execute('PRAGMA user_version').fetchone()[0]
-        if version != 2:
-            raise ValueError(f'此迁移器仅兼容 schema v2，当前为 {version}')
+        if version not in (2, 3):
+            raise ValueError(f'此迁移器仅兼容 schema v2/v3，当前为 {version}')
         if connection.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
             raise ValueError('数据库完整性检查失败')
         if extension_exists(connection):
@@ -283,6 +283,9 @@ def apply_import(html_path, database_path, report_path=None):
                                (import_id, sha256, html_path.name, zlib.compress(content), dumps(payload['summary']), dumps(payload['issues']), dumps(report)))
             for metadata in payload['summary']['files']:
                 source = (html_path.parent / metadata['file']).resolve()
+                organized_source = (html_path.parent / 'data' / 'raw' / metadata['file']).resolve()
+                if not source.is_file() and organized_source.is_relative_to(html_path.parent) and organized_source.is_file():
+                    source = organized_source
                 # Metadata in HTML may not request arbitrary local file access.
                 in_workspace = source.is_relative_to(html_path.parent)
                 present = in_workspace and source.is_file()

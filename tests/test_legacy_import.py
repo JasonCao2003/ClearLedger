@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import sqlite3
@@ -29,6 +30,25 @@ def fixture():
 
 
 class LegacyImportTests(unittest.TestCase):
+    def test_finds_sources_after_workspace_reorganization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            db = directory / 'test.sqlite3'
+            with closing(sqlite3.connect(db)) as connection:
+                for migration in sorted((ROOT / 'src-tauri/migrations').glob('*.sql')):
+                    connection.executescript(migration.read_text('utf-8'))
+                connection.execute('PRAGMA user_version=2')
+            raw = directory / 'data' / 'raw'
+            raw.mkdir(parents=True)
+            source = raw / 'sample.csv'
+            source.write_text('synthetic,data\n1,2\n', encoding='utf-8')
+            html = directory / 'ledger.html'
+            html.write_text('<script id="ledger-data" type="application/json">'+dumps(fixture())+'</script>', encoding='utf-8')
+            apply_import(html, db)
+            with closing(sqlite3.connect(db)) as connection:
+                saved = connection.execute('SELECT original_path,sha256 FROM legacy_source_files').fetchone()
+                self.assertEqual(saved, (str(source.resolve()), hashlib.sha256(source.read_bytes()).hexdigest()))
+
     def test_preserves_evidence_zeros_existing_data_and_retries(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
