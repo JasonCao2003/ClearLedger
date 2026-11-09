@@ -2,22 +2,28 @@ import {invoke} from '@tauri-apps/api/core'
 import {digest, parseLedger} from './import-ledger.js'
 
 const $ = (id) => document.getElementById(id)
-const names = {stats: '消费统计', calendar: '消费日历', details: '月度明细', debt: '分期还款', settings: '设置'}
+const names = {calendar: '消费日历', details: '明细', debt: '待还', settings: '设置'}
+const purposes = ['消费', '退款', '还款', '资金划转', '收入', '待判定', '排除']
 const defaultCategories = ['饮食', '出行', '基本支出', '生活', '娱乐', '学习']
 const uncategorized = '待分类'
 const platforms = ['支付宝', '微信', '美团', '京东', '工商银行']
 const current = new Intl.DateTimeFormat('sv-SE', {timeZone: 'Asia/Shanghai'}).format(new Date()).slice(0, 7)
 const emptySettings = () => ({
   categories: {}, links: {}, roles: {}, debts: {}, merchants: {}, merchantNotes: {},
+  amounts: {}, deleted: {}, deletedRefunds: {}, installments: {}, manualOrders: {},
   taxonomy: {items: [...defaultCategories], aliases: {}},
 })
 let settings = emptySettings()
 let source = {rows: [], reports: []}
 let ledger = []
-let page = 'stats'
+let page = 'calendar'
 let settingsTab = 'files'
-let filter = {category: '', source: '', state: '', day: '', query: ''}
+let repaymentTab = 'records'
+let filter = {category: '', source: '', method: '', state: '', purpose: '消费', day: '', query: ''}
+let detailScope = 'month'
+let detailYear = current.slice(0, 4)
 const pages = {}
+let showPaidRepayments = false
 const dialog = $('dialog')
 const outsideDialog = ({clientX, clientY}) => {
   const {left, right, top, bottom} = dialog.getBoundingClientRect()
@@ -103,7 +109,11 @@ function rebuild() {
   const bucket = new Map()
   const directed = new Map()
   const marketplaceLinks = new Map()
-  ledger = source.rows.map(row => ({...row, role: role(row), linked: [], reason: '', flags: []}))
+  ledger = [...source.rows, ...Object.entries(settings.manualOrders).map(([id, order]) => ({
+    id, source: '手动', time: order.date + ' 00:00:00', amount: order.amount ?? 0, direction: '支出',
+    kind: order.amount === undefined ? '分期关联订单' : '手工记账', state: '', title: order.title, merchant: '', method: '', tx: '', order: '', account: '', note: '',
+  }))].filter(row => !settings.deleted[row.id])
+    .map(row => ({...row, role: role(row), linked: [], reason: '', flags: []}))
   for (const r of ledger) {
     byId.set(r.id, r)
     if (r.role !== '消费') continue
@@ -183,6 +193,7 @@ function rebuild() {
     r.reason = directed.get(r.id)[1]
     cursor.linked.push(r)
   }
+  for (const r of ledger) if (r.kind !== '分期关联订单') r.amount = settings.amounts[r.id] ?? r.amount
   for (const r of ledger) {
     const paid = r.linked.filter(child => child.role === '消费')
     const refundRows = r.linked.filter(child => child.role === '退款')
@@ -196,7 +207,8 @@ function rebuild() {
     }
     if (refundRows.length > 1 && new Set(refundRows.map(x => x.source)).size > 1) r.flags.push('退款跨来源，需核对到账笔数')
     const actual = [...refunds].reduce((sum, [k, group]) => sum + Number(k.split('|')[1]) * Math.max(...group.values()), 0)
-    const full = [r, ...paid].some(x => /已全额退款/.test(x.state))
+    const full = !settings.deletedRefunds[r.id] && !refundRows.some(child => Object.hasOwn(settings.amounts, child.id)) &&
+      [r, ...paid].some(x => /已全额退款/.test(x.state))
     r.refund = full ? r.amount : Math.min(r.amount, actual)
     if (actual > r.amount) r.flags.push('退款合计超过支付额')
     if (full && !refundRows.length) r.flags.push('缺少退款到账流水')
@@ -250,30 +262,6 @@ function bindPager(id, index, callback) {
   }
 }
 
-function stats() {
-  const monthly = spend().filter(inMonth)
-  const year = month().slice(0, 4)
-  const annual = spend().filter(r => r.time.startsWith(year))
-  const repaid = roots().filter(r => inMonth(r) && r.role === '还款')
-  const months = Array.from({length: 12}, (_, i) => year + '-' + String(i + 1).padStart(2, '0'))
-  const series = months.map(m => total(annual.filter(r => r.time.startsWith(m))))
-  const max = Math.max(...series, 1)
-  const coverage = source.reports.filter(r => r.start.slice(0, 7) <= month() && r.end.slice(0, 7) >= month()).map(r => r.source)
-  const missing = platforms.filter(x => !coverage.includes(x))
-  const categoryPage = mainPage(categories(), 'category-totals', 7)
-  const monthlyPage = mainPage(months.map((m, i) =>
-    tr('<button data-month="' + m + '">' + m + '</button>', annual.some(r => r.time.startsWith(m)) ? money(series[i]) : '—',
-      '<meter aria-label="' + m + ' 净消费" min="0" max="' + max + '" value="' + series[i] + '"></meter>')), 'months', 7)
-  return '<div class="cards">' + card('本月净消费', monthly.length ? money(total(monthly)) : '—', monthly.length + ' 笔消费订单') +
-    card('年度净消费', annual.length ? money(total(annual)) : '—', year + ' 年已导入记录') +
-    card('本月已还', repaid.length ? money(total(repaid, 'amount')) : '—', '按已识别的还款流水') +
-    card('本月待核对', String(roots().filter(r => inMonth(r) && needsReview(r)).length), '统计可能随核对更新') + '</div>' +
-    (missing.length ? '<p class="warning">所选月缺少这些来源的流水覆盖迹象：' + missing.join('、') + '。</p>' : '') +
-    '<div class="stats-grid">' +
-    panel('分类汇总', table(['分类', '本月净消费', '年度净消费'], categoryPage.rows.map(c => tr(esc(c), money(total(monthly.filter(r => r.category === c))), money(total(annual.filter(r => r.category === c)))))) + categoryPage.footer) +
-    panel('月度总消费', table(['月份', '净消费', '年度月度对比'], monthlyPage.rows) + monthlyPage.footer) + '</div>'
-}
-
 function calendar() {
   const [year, m] = month().split('-').map(Number)
   const days = Array.from({length: new Date(year, m, 0).getDate()}, (_, i) => i + 1)
@@ -292,32 +280,51 @@ function calendar() {
 }
 
 const label = (r) => r.title || r.merchant || r.kind || r.source
+function creditPayments(row) {
+  return [row, ...row.linked].filter(item => item.role === '消费' &&
+    channels.some(channel => item.method.includes(channel)))
+}
+
 function detailTable(rows) {
   return table(['时间', '交易', '分类 / 状态', '实付 / 流水金额', '退款', '净消费', '核对'], rows.map(r =>
     tr(esc(r.time), '<span class="truncate" title="' + esc(label(r)) + '">' + esc(label(r)) + '</span><small class="truncate">' +
-      esc([...new Set([r.source, ...r.linked.map(x => x.source)])].join(' · ')) + '</small>',
+      esc([...new Set([r.source, ...r.linked.map(x => x.source), ...creditPayments(r).map(x => x.method)])].join(' · ')) + '</small>',
       r.role === '消费' ? esc(r.category) : r.role, money(r.amount), r.refund ? money(r.refund) : '—',
       r.role === '消费' ? money(r.net) : '—', '<button data-id="' + r.id + '">' + (needsReview(r) ? '待核对' : '查看') + '</button>')), 'transactions')
 }
-function details() {
-  const rows = roots().filter(r => inMonth(r) &&
+function detailResults() {
+  const prefix = detailScope === 'month' ? month() : detailScope === 'year' ? detailYear : ''
+  const candidates = filter.purpose === '退款' ? ledger : roots()
+  const rows = candidates.filter(r => r.time.startsWith(prefix) &&
+    (!filter.purpose || r.role === filter.purpose) &&
     (!filter.category || r.role === '消费' && r.category === filter.category) &&
     (!filter.source || [r, ...r.linked].some(x => x.source === filter.source)) &&
+    (!filter.method || [r, ...r.linked].some(x => channels.includes(filter.method)
+      ? x.method.includes(filter.method) : x.method.trim() === filter.method)) &&
     (!filter.day || r.time.slice(8, 10) === filter.day) &&
-    (!filter.query || [r, ...r.linked].some(x => [label(x), x.tx, x.order].join(' ').toLowerCase().includes(filter.query.toLowerCase()))) &&
-    (filter.state === '全部流水' || (filter.state === '待核对' ? needsReview(r) : r.role === '消费')))
+    (!filter.query || [r, ...r.linked].some(x => [label(x), x.merchant, x.tx, x.order].join(' ').toLowerCase().includes(filter.query.toLowerCase()))) &&
+    (filter.state !== '待核对' || needsReview(r)))
     .sort((a, b) => b.time.localeCompare(a.time))
   const result = mainPage(rows, 'orders', compactHeight() ? 5 : 9)
+  return '<p class="muted">共 ' + rows.length + ' 条。' + (filter.purpose === '退款' ? '按退款流水日期显示。' : '') + '</p>' +
+    (rows.length ? detailTable(result.rows) + result.footer : '<p>当前筛选没有记录。</p>')
+}
+
+function details() {
   const select = (name, caption, choices, defaultLabel) => '<label>' + caption + '<select data-filter="' + name + '">' +
     '<option value="">' + defaultLabel + '</option>' + choices.map(x => option(x, filter[name])).join('') + '</select></label>'
+  const methods = [...new Set(source.rows.map(row => row.method.trim()).filter(Boolean))]
+    .filter(method => !channels.some(channel => method.includes(channel)))
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'))
   return panel('归并后的账单', '<form id="filters" class="filters">' +
-    select('category', '分类', categories(), '全部分类') + select('source', '来源', platforms, '全部来源') +
-    select('state', '范围', ['待核对', '全部流水'], '消费订单') +
-    '<label>搜索<input name="query" value="' + esc(filter.query) + '" placeholder="商品、商户、订单号"></label><button>搜索</button>' +
-    '<button type="button" id="merchants">管理商户分类</button>' +
-    (filter.day ? '<button type="button" id="clear-day">清除 ' + filter.day + ' 日</button>' : '') + '</form>' +
-    '<p class="muted">共 ' + rows.length + ' 条。本人划转、收入和还款可在「全部流水」查看。</p>' +
-    (rows.length ? detailTable(result.rows) + result.footer : '<p>当前筛选没有记录。</p>'))
+    select('category', '分类', categories(), '全部分类') + select('source', '来源', [...platforms, '手动'], '全部来源') +
+    select('purpose', '用途', purposes, '全部用途') +
+    select('method', '支付方式', [...channels, ...methods], '全部支付方式') +
+    '<button type="button" id="review-filter" aria-pressed="' + (filter.state === '待核对') + '">仅待核对</button>' +
+    '<label>搜索<input type="search" name="query" value="' + esc(filter.query) + '" placeholder="商品、商户、订单号"></label>' +
+    '<button class="primary" type="button" id="record-expense">记一笔</button>' +
+    (filter.day ? '<button type="button" id="clear-day">清除 ' + filter.day + ' 日</button>' : '') +
+    '</form><div id="detail-results">' + detailResults() + '</div>')
 }
 
 function manageMerchants(query = '', sortBy = 'count', hideMarked = false, index = 0) {
@@ -469,21 +476,148 @@ function editMerchantNote(key, name, back) {
 }
 
 
+const channels = ['白条', '花呗']
+
+function installmentPayments(plan) {
+  const base = Math.floor(plan.amount / plan.periods)
+  const extra = plan.amount % plan.periods
+  return Array.from({length: plan.periods}, (_, index) => {
+    let date = ''
+    if (plan.firstDue) {
+      const [year, month, day] = plan.firstDue.split('-').map(Number)
+      const last = new Date(Date.UTC(year, month + index, 0)).getUTCDate()
+      date = new Date(Date.UTC(year, month - 1 + index, Math.min(day, last))).toISOString().slice(0, 10)
+    }
+    return {index, date, amount: base + (index < extra ? 1 : 0), paid: index < plan.paid || !!plan.paidPeriods?.includes(index)}
+  })
+}
+
+function repaymentMonths() {
+  const months = new Map()
+  for (const plan of Object.values(settings.installments)) {
+    for (const payment of installmentPayments(plan)) {
+      const key = payment.date?.slice(0, 7) || 'undated'
+      if (!months.has(key)) months.set(key, [])
+      months.get(key).push({...payment, name: plan.name, channel: plan.channel})
+    }
+  }
+  return months
+}
+
+function repaymentMonthDetail(key, index = 0) {
+  const payments = repaymentMonths().get(key)
+  if (!payments) return
+  const result = paginate(payments, index, 8, 'repayment-month-detail', '还款明细')
+  $('dialog-content').innerHTML = '<h2 id="dialog-title">' + (key === 'undated' ? '日期待定' : esc(key)) +
+    ' · 还款明细</h2>' + table(['日期', '名称', '渠道', '金额', '状态'],
+      result.rows.map(payment => tr(payment.date || '待定', esc(payment.name), esc(payment.channel || '待补填'),
+        money(payment.amount), payment.paid ? '已还' : '待还'))) + result.footer
+  bindPager('repayment-month-detail', result.index, next => repaymentMonthDetail(key, next))
+  if (!dialog.open) dialog.showModal()
+}
+
+function repaymentMonthTable() {
+  const months = repaymentMonths()
+  const keys = [...months.keys()].filter(key => key !== 'undated').sort().reverse()
+  if (months.has('undated')) keys.push('undated')
+  const result = mainPage(keys, 'repayment-months', compactHeight() ? 3 : 5, '月份')
+  return panel('各月待还 / 已还', keys.length ? table(['月份', '待还', '已还'], result.rows.map(key => {
+    const payments = months.get(key)
+    const paid = total(payments.filter(payment => payment.paid), 'amount')
+    return tr('<button type="button" data-repayment-month="' + esc(key) + '">' +
+      (key === 'undated' ? '日期待定' : esc(key)) + '</button>', money(total(payments, 'amount') - paid), money(paid))
+  })) + result.footer : '<p>暂无还款记录。</p>')
+}
+
 function debt() {
-  const rows = roots().filter(r => r.role === '还款')
-  const monthly = rows.filter(inMonth).sort((a, b) => b.time.localeCompare(a.time))
-  const snapshot = settings.debts[month()]
-  const result = mainPage(monthly, 'repayments', compactHeight() ? 3 : 6)
-  return '<div class="cards">' +
-    card('总待还', snapshot ? money(snapshot.remaining) : '待补录', '所选月的手工余额快照') +
-    card('本月待还', snapshot ? money(snapshot.due) : '待补录', '所选月应还未还金额') +
-    card('本月已还', monthly.length ? money(total(monthly, 'amount')) : '—', '已识别成功流水') +
-    card('累计已还', rows.length ? money(total(rows, 'amount')) : '—', '所有已导入月份') + '</div>' +
-    panel('补录 ' + month() + ' 还款余额', '<p class="muted">按平台账单汇总后录入金额。补录值是快照，更新账单后需同步更新。</p>' +
-      '<form id="debt-form" class="filters"><label>总待还（元）<input name="remaining" type="number" min="0" step=".01" required value="' +
-      (snapshot ? snapshot.remaining / 100 : '') + '"></label><label>本月待还（元）<input name="due" type="number" min="0" step=".01" required value="' +
-      (snapshot ? snapshot.due / 100 : '') + '"></label><button class="primary">保存余额</button></form><p id="debt-error" class="warning" role="alert"></p>') +
-    panel('本月还款流水', monthly.length ? detailTable(result.rows) + result.footer : '<p>该月未识别到还款流水。</p>')
+  const plans = Object.entries(settings.installments).reverse().map(([id, plan]) => {
+    const payments = installmentPayments(plan)
+    const paid = total(payments.filter(payment => payment.paid), 'amount')
+    const pending = payments.filter(payment => !payment.paid)
+    const dueThisMonth = total(pending.filter(payment => payment.date?.startsWith(current)), 'amount')
+    return {id, plan, paid, remaining: plan.amount - paid, dueThisMonth, next: pending[0]}
+  })
+  const visiblePlans = showPaidRepayments ? plans : plans.filter(({remaining}) => remaining > 0)
+  const result = mainPage(visiblePlans, 'installments', compactHeight() ? 5 : 9)
+  const summary = '<span>本月待还 <strong>' + money(total(plans, 'dueThisMonth')) + '</strong></span>' +
+    '<span>总待还 <strong>' + money(total(plans, 'remaining')) + '</strong></span>'
+  const toggle = '<button type="button" id="toggle-paid-repayments" aria-pressed="' + showPaidRepayments + '">' +
+    (showPaidRepayments ? '隐藏已还清' : '显示已还清') + '</button>'
+  const tabs = [['records', '手工记录'], ['months', '各月汇总']].map(([id, label]) =>
+    '<button type="button" data-repayment-tab="' + id + '" aria-pressed="' + (repaymentTab === id) + '">' + label + '</button>'
+  ).join('')
+  const toolbar = '<div class="repayment-toolbar"><div class="actions settings-tabs" aria-label="待还分区">' + tabs +
+    '</div><div class="actions repayment-summary">' + summary + '</div></div>'
+  if (repaymentTab === 'months') return toolbar + repaymentMonthTable()
+  return toolbar + panel('手工记录', '<div class="actions panel-tools">' + toggle +
+      '<button type="button" class="primary" id="add-manual-repayment">手工添加</button></div>' +
+      (visiblePlans.length ? table(['名称', '类型', '渠道', '总金额', '已还', '待还', '下次还款日', '操作'],
+        result.rows.map(({id, plan, paid, remaining, next}) => tr(esc(plan.name),
+          plan.type === 'consumption' ? '消费' : '分期', channels.includes(plan.channel) ? plan.channel : '待补填',
+          money(plan.amount), money(paid), money(remaining), next ? next.date || '待定' : '—',
+          '<button data-installment="' + id + '">详情 / 编辑</button>'))) + result.footer : (plans.length ? '<p>暂无待还记录。</p>' : '<p>暂无还款记录。</p>')))
+}
+
+const validDate = value => {
+  if (typeof value !== 'string' || !/^20\d\d-\d\d-\d\d$/.test(value)) return false
+  const date = new Date(value + 'T00:00:00Z')
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+const makeId = () => crypto.randomUUID().replaceAll('-', '').slice(0, 24)
+
+function editInstallment(id, index = 0, type = 'installment') {
+  const plan = settings.installments[id] || {name: '', amount: 0, periods: 1, paid: 0, firstDue: '', type}
+  const consumption = plan.type === 'consumption'
+  const kind = consumption ? '消费' : '分期'
+  const schedule = id && !consumption ? paginate(installmentPayments(plan), index, 4, 'installment-schedule') : null
+  $('dialog-content').innerHTML = '<h2 id="dialog-title">' + (id ? kind + '还款详情' : '添加' + kind) + '</h2>' +
+    '<form id="installment-form"><div class="filters"><label>计划名称（可选）<input name="title" maxlength="80" value="' + esc(plan.name) +
+    '"></label><label>渠道<select name="channel" required><option value="">请选择</option>' +
+    channels.map(channel => '<option' + (channel === plan.channel ? ' selected' : '') + '>' + channel + '</option>').join('') +
+    '</select></label><label>总金额（元）<input name="amount" type="number" min=".01" max="99999999.99" step=".01" required value="' +
+    (plan.amount ? plan.amount / 100 : '') + '"></label>' +
+    (consumption ? '<label>状态<select name="paid"><option value="0">待还</option><option value="1"' +
+      (plan.paid ? ' selected' : '') + '>已还</option></select></label>' :
+      '<label>分期数<input name="periods" type="number" min="1" max="120" required value="' + plan.periods +
+      '"></label><label>连续已还期数<input name="paid" type="number" min="0" max="120" required value="' + plan.paid + '"></label>') +
+    '<label>' + (consumption ? '还款日' : '首期还款日') + '（可选）<input name="firstDue" type="date" value="' + esc(plan.firstDue) +
+    '"></label></div><div class="actions"><button class="primary">保存</button>' +
+    (id ? '<button type="button" id="delete-installment">删除记录</button>' : '') +
+    '</div></form><p id="installment-error" class="warning" role="alert"></p>' +
+    (schedule ? table(['期次', '计划还款日', '本金', '状态'], schedule.rows.map((row, i) =>
+      tr(schedule.index * 4 + i + 1, row.date || '—', money(row.amount), row.paid ? '已还' : '待还'))) + schedule.footer : '')
+  if (!dialog.open) dialog.showModal()
+  const form = $('installment-form')
+  form.onsubmit = e => {
+    e.preventDefault()
+    const data = new FormData(form)
+    const name = data.get('title').trim() || kind
+    const amount = Math.round(Number(data.get('amount')) * 100)
+    const periods = consumption ? 1 : Number(data.get('periods'))
+    const paid = Number(data.get('paid'))
+    const firstDue = data.get('firstDue')
+    const channel = data.get('channel')
+    if (!channels.includes(channel) || !Number.isSafeInteger(amount) || amount < periods || amount > 9999999999 ||
+        !Number.isInteger(periods) || periods < 1 || periods > 120 || !Number.isInteger(paid) || paid < 0 || paid > periods ||
+        (firstDue && !validDate(firstDue))) {
+      $('installment-error').textContent = '请检查渠道、金额、还款进度和日期。每次还款金额至少 0.01 元。'
+      return
+    }
+    settings.installments[id || makeId()] = {name, amount, periods, paid, firstDue, channel, type: consumption ? 'consumption' : 'installment'}
+    if (plan.paidPeriods?.length) settings.installments[id].paidPeriods = plan.paidPeriods.filter(index => index >= paid && index < periods)
+    if (!id) pages.installments = 0
+    save()
+    dialog.close()
+  }
+  if (id) {
+    $('delete-installment').onclick = () => {
+      if (!window.confirm('删除此还款记录？')) return
+      delete settings.installments[id]
+      save()
+      dialog.close()
+    }
+    if (schedule) bindPager('installment-schedule', schedule.index, next => editInstallment(id, next))
+  }
 }
 
 function imports() {
@@ -502,6 +636,39 @@ function imports() {
         r.error ? '读取失败（' + esc(r.error) + '）' : r.skipped ? '部分记录需检查' : '已读取')), 'files') + result.footer)
 }
 
+function recordExpense() {
+  const date = new Intl.DateTimeFormat('sv-SE', {timeZone: 'Asia/Shanghai'}).format(new Date())
+  $('dialog-content').innerHTML = '<h2 id="dialog-title">记一笔</h2>' +
+    '<form id="record-expense-form" class="filters"><label>名称<input name="title" maxlength="80" required></label>' +
+    '<label>金额（元）<input name="amount" type="number" min=".01" max="99999999.99" step=".01" required></label>' +
+    '<label>日期<input name="date" type="date" required value="' + date + '"></label>' +
+    '<label>分类<select name="category">' + categories().map(name => option(name, filter.category || '未分类')).join('') +
+    '</select></label><button class="primary">保存</button></form><p id="record-error" class="warning" role="alert"></p>'
+  dialog.showModal()
+  $('record-expense-form').onsubmit = e => {
+    e.preventDefault()
+    const data = new FormData(e.target)
+    const title = data.get('title').trim()
+    const amount = Math.round(Number(data.get('amount')) * 100)
+    const date = data.get('date')
+    const category = data.get('category')
+    if (!title || !Number.isSafeInteger(amount) || amount < 1 || amount > 9999999999 ||
+        !validDate(date) || !categories().includes(category)) {
+      $('record-error').textContent = '请检查名称、金额、日期和分类。'
+      return
+    }
+    const id = makeId()
+    settings.manualOrders[id] = {title, amount, date}
+    settings.categories[id] = category
+    filter = {category: '', source: '', method: '', state: '', purpose: '消费', day: '', query: ''}
+    detailScope = 'month'
+    $('month').value = date.slice(0, 7)
+    pages.orders = 0
+    save()
+    dialog.close()
+  }
+}
+
 function settingsPage() {
   const tabs = [['files', '导入与备份'], ['categories', '分类管理']]
   return '<div class="actions settings-tabs" aria-label="设置分区">' + tabs.map(([id, label]) =>
@@ -514,7 +681,8 @@ function categorySettings() {
   for (const row of spend()) orders.set(row.category, (orders.get(row.category) || 0) + 1)
   const result = mainPage(categories(), 'category-settings', compactHeight() ? 5 : 8)
   return panel('消费分类', '<form id="add-category" class="filters"><label>分类名称' +
-    '<input name="name" maxlength="24" required></label><button class="primary">新增分类</button></form>' +
+    '<input name="name" maxlength="24" required></label><button class="primary">新增分类</button>' +
+    '<button type="button" id="merchants">管理商户分类</button></form>' +
     '<p id="category-error" class="warning" role="alert"></p>' +
     table(['分类', '订单数', '操作'], result.rows.map(name => tr(esc(name), orders.get(name) || 0,
       name === uncategorized ? '系统分类' : '<div class="actions"><button data-edit-category="' + esc(name) +
@@ -572,16 +740,63 @@ function renameCategory(name) {
   }
 }
 
+function editAmount(row, back) {
+  const original = source.rows.find(item => item.id === row.id)?.amount ?? settings.manualOrders[row.id]?.amount ?? row.amount
+  const yuan = amount => (amount / 100).toFixed(2)
+  $('dialog-content').innerHTML = '<h2 id="dialog-title">修改金额</h2>' +
+    '<p>原始流水金额 ' + money(original) + '</p>' +
+    '<form id="amount-form" class="filters"><label>金额（元）<input name="amount" inputmode="decimal" required value="' +
+    yuan(row.amount) + '"></label><button class="primary">保存金额</button><button type="button" id="amount-back">返回</button></form>' +
+    '<p id="amount-error" class="warning" role="alert"></p>'
+  const form = $('amount-form')
+  form.elements.amount.select()
+  $('amount-back').onclick = back
+  form.onsubmit = e => {
+    e.preventDefault()
+    const input = form.elements.amount.value.trim()
+    const [whole, fraction = ''] = input.split('.')
+    const amount = Number(whole) * 100 + Number(fraction.padEnd(2, '0'))
+    if (!/^\d{1,8}(?:\.\d{1,2})?$/.test(input) || amount > 9999999999) {
+      $('amount-error').textContent = '请输入有效金额，最多两位小数。'
+      return
+    }
+    if (amount === original) delete settings.amounts[row.id]
+    else settings.amounts[row.id] = amount
+    save()
+    back()
+  }
+}
+
+function deleteRecord(row) {
+  const parent = row.parent ? ledger.find(item => item.id === row.parent) : row
+  const payments = [parent, ...parent.linked].filter(item => item.role === '消费')
+  const refunds = parent.linked.filter(item => item.role === '退款')
+  const isPayment = row.role === '消费'
+  const group = isPayment && row === parent ? payments : [row]
+  const counterpart = isPayment ? refunds : row.role === '退款' ? payments : []
+  if (!window.confirm('删除这条记录？' + (group.length > 1 ? '该支出的 ' + group.length + ' 条归并支付流水会一并移除。' : ''))) return false
+  const both = counterpart.length && window.confirm('同时删除关联的' + (isPayment ? '退款' : '支出') +
+    '（' + counterpart.length + ' 条流水）？确定会一并删除，取消只删除选中的记录。')
+  if (!both && row.role === '退款' && row.parent) settings.deletedRefunds[parent.id] = true
+  if (!both && isPayment && row === parent) {
+    for (const refund of refunds) settings.links[refund.id] = null
+  }
+  for (const item of [...group, ...(both ? counterpart : [])]) settings.deleted[item.id] = true
+  save()
+  return true
+}
+
 function inspect(id, back, index = 0) {
   const row = ledger.find(r => r.id === id)
   if (!row) return
   const result = paginate([row, ...row.linked], index, 1, 'sources')
-  const options = ['消费', '退款', '还款', '资金划转', '收入', '待判定', '排除']
   const raw = (r) => '<details><summary>' + esc(r.source + ' · ' + r.time + ' · ' + money(r.amount) + (r.reason ? ' · ' + r.reason : '')) +
     '</summary><p>' + esc([r.kind, r.state, r.merchant, r.title, r.method, r.note].filter(Boolean).join(' · ')) +
     '</p><p>交易单号 ' + esc(r.tx || '—') + '<br>商家单号 ' + esc(r.order || '—') +
     '<br>核对编号 <code>' + r.id + '</code></p>' +
-    (r.parent ? '<button data-split="' + r.id + '">解除关联</button>' : '') + '</details>'
+    (r.parent ? '<div class="actions"><button data-split="' + r.id + '">解除关联</button>' +
+      (r.kind === '分期关联订单' ? '' : '<button data-edit-amount="' + r.id + '">修改金额</button>') +
+      '<button data-delete-row="' + r.id + '">删除记录</button></div>' : '') + '</details>'
   const candidates = spend().filter(p => p.id !== id && (row.role === '退款'
     ? p.time <= row.time && p.amount >= row.amount
     : p.amount === row.amount && Math.abs(seconds(p) - seconds(row)) <= 300))
@@ -589,9 +804,11 @@ function inspect(id, back, index = 0) {
   $('dialog-content').innerHTML = (back ? '<button id="order-back">返回商户详情</button>' : '') +
     '<h2 id="dialog-title">' + esc(label(row)) + '</h2>' +
     '<p>' + esc(row.role) + ' · ' + money(row.amount) + (row.refund ? ' · 累计退款 ' + money(row.refund) : '') + '</p>' +
+    '<div class="actions">' + (row.kind === '分期关联订单' ? '' : '<button data-edit-amount="' + id + '">修改金额</button>') +
+    '<button data-delete-row="' + id + '">删除记录</button></div>' +
     (row.flags.length ? '<p class="warning">' + esc(row.flags.join('；')) + '</p>' : '') +
     '<div class="filters"><label>交易用途<select id="role"><option value="">自动识别（当前 ' + esc(row.role) + '）</option>' +
-    options.map(x => option(x, settings.roles[id])).join('') + '</select></label>' +
+    purposes.map(x => option(x, settings.roles[id])).join('') + '</select></label>' +
     (row.role === '消费' ? '<label>消费分类<select id="category"><option value="">自动分类（当前 ' + esc(row.category) + '）</option>' +
     categories().map(x => option(x, settings.categories[id])).join('') + '</select></label>' : '') + '</div>' +
     '<h3>来源流水</h3>' + result.rows.map(raw).join('') + result.footer +
@@ -601,6 +818,18 @@ function inspect(id, back, index = 0) {
   const modal = $('dialog')
   if (!modal.open) modal.showModal()
   bindPager('sources', result.index, next => inspect(id, back, next))
+  for (const button of modal.querySelectorAll('[data-edit-amount]')) {
+    button.onclick = () => editAmount(ledger.find(item => item.id === button.dataset.editAmount),
+      () => inspect(id, back, result.index))
+  }
+  for (const button of modal.querySelectorAll('[data-delete-row]')) {
+    button.onclick = () => {
+      if (!deleteRecord(ledger.find(item => item.id === button.dataset.deleteRow))) return
+      if (ledger.some(item => item.id === id)) inspect(id, back, result.index)
+      else if (back) back()
+      else modal.close()
+    }
+  }
   if (back) {
     $('order-back').onclick = back
     $('order-back').focus()
@@ -641,17 +870,26 @@ function inspect(id, back, index = 0) {
 
 function render() {
   $('title').textContent = names[page]
+  const isDetails = page === 'details'
+  $('scope-control').hidden = !isDetails
+  $('year-control').hidden = !isDetails || detailScope !== 'year'
+  $('month-control').hidden = page === 'settings' || page === 'debt' || (isDetails && detailScope !== 'month')
+  $('detail-scope').value = detailScope
+  if (isDetails && detailScope === 'year') {
+    const years = [...new Set([detailYear, month().slice(0, 4), ...ledger.map(row => row.time.slice(0, 4))])].sort().reverse()
+    $('detail-year').innerHTML = years.map(year => option(year, detailYear)).join('')
+  }
   document.querySelectorAll('nav button').forEach(button => {
     if (button.dataset.page === page) button.setAttribute('aria-current', 'page')
     else button.removeAttribute('aria-current')
   })
-  $('view').innerHTML = {stats, calendar, details, debt, settings: settingsPage}[page]()
+  $('view').innerHTML = {calendar, details, debt, settings: settingsPage}[page]()
 }
 function setMonth(value) {
   if (value.slice(0, 4) !== month().slice(0, 4)) pages.months = 0
   $('month').value = value
   filter.day = ''
-  pages.days = pages.orders = pages.repayments = 0
+  pages.days = pages.orders = 0
   render()
 }
 function shiftMonth(step) {
@@ -664,6 +902,18 @@ $('next').onclick = () => shiftMonth(1)
 $('month').onchange = () => {
   pages.months = 0
   setMonth(month())
+}
+$('detail-scope').onchange = e => {
+  if (e.target.value === 'year' && detailScope === 'month') detailYear = month().slice(0, 4)
+  detailScope = e.target.value
+  filter.day = ''
+  pages.orders = 0
+  render()
+}
+$('detail-year').onchange = e => {
+  detailYear = e.target.value
+  pages.orders = 0
+  render()
 }
 window.matchMedia('(max-height: 739px)').addEventListener('change', render)
 
@@ -714,7 +964,32 @@ async function importFiles(files) {
 document.addEventListener('click', e => {
   const button = e.target.closest('button')
   if (!button) return
-  const {page: nextPage, id, day, category, month: nextMonth} = button.dataset
+  const {page: nextPage, id, day, category} = button.dataset
+  if (button.dataset.repaymentTab) {
+    repaymentTab = button.dataset.repaymentTab
+    render()
+    document.querySelector('[data-repayment-tab="' + repaymentTab + '"]')?.focus()
+    return
+  }
+  if (button.dataset.repaymentMonth) {
+    repaymentMonthDetail(button.dataset.repaymentMonth)
+    return
+  }
+  if (button.id === 'toggle-paid-repayments') {
+    showPaidRepayments = !showPaidRepayments
+    pages.installments = 0
+    render()
+    $('toggle-paid-repayments').focus()
+    return
+  }
+  if (button.id === 'add-manual-repayment') {
+    $('dialog-content').innerHTML = '<h2 id="dialog-title">手工添加</h2><div class="actions">' +
+      '<button type="button" data-add-repayment="consumption">消费</button>' +
+      '<button type="button" data-add-repayment="installment">分期</button></div>'
+    dialog.showModal()
+  }
+  if (button.dataset.addRepayment) editInstallment(undefined, 0, button.dataset.addRepayment)
+  if (button.dataset.installment) editInstallment(button.dataset.installment)
   if (button.dataset.settingsTab) {
     settingsTab = button.dataset.settingsTab
     render()
@@ -736,12 +1011,19 @@ document.addEventListener('click', e => {
   if (id) inspect(id)
   if (day) {
     page = 'details'
-    filter = {category, source: '', state: '', day, query: ''}
+    detailScope = 'month'
+    filter = {category, source: '', method: '', state: '', purpose: '消费', day, query: ''}
     pages.orders = 0
     render()
   }
-  if (nextMonth) setMonth(nextMonth)
   if (button.id === 'clear-day') { filter.day = ''; pages.orders = 0; render() }
+  if (button.id === 'record-expense') recordExpense()
+  if (button.id === 'review-filter') {
+    filter.state = filter.state ? '' : '待核对'
+    button.setAttribute('aria-pressed', String(Boolean(filter.state)))
+    pages.orders = 0
+    $('detail-results').innerHTML = detailResults()
+  }
   if (button.id === 'merchants') manageMerchants()
   if (button.id === 'export') download('账本核对设置-' + current + '.json', settings)
   if (button.id === 'export-ledger') download('完整账本-' + current + '.json', {rows: source.rows, reports: source.reports, settings})
@@ -758,29 +1040,19 @@ document.addEventListener('submit', e => {
     changeCategory('', name)
     $('add-category').elements.name.focus()
   }
-  if (e.target.id === 'filters') {
-    e.preventDefault()
-    filter.query = new FormData(e.target).get('query').trim()
-    pages.orders = 0
-    render()
-  }
-  if (e.target.id === 'debt-form') {
-    e.preventDefault()
-    const data = new FormData(e.target)
-    const remaining = Math.round(Number(data.get('remaining')) * 100)
-    const due = Math.round(Number(data.get('due')) * 100)
-    if (!Number.isSafeInteger(remaining) || !Number.isSafeInteger(due) || due > remaining || due < 0) {
-      $('debt-error').textContent = '本月待还应在 0 元至总待还之间。'
-      return
-    }
-    settings.debts[month()] = {remaining, due}
-    save()
-  }
+  if (e.target.id === 'filters') e.preventDefault()
+})
+document.addEventListener('input', e => {
+  if (e.target.form?.id !== 'filters' || e.target.name !== 'query') return
+  filter.query = e.target.value.trim()
+  pages.orders = 0
+  $('detail-results').innerHTML = detailResults()
 })
 document.addEventListener('change', async e => {
   const name = e.target.dataset.filter
   if (name) {
     filter[name] = e.target.value
+    if (name === 'purpose' && filter.purpose && filter.purpose !== '消费') filter.category = ''
     filter.query = new FormData(e.target.form).get('query').trim()
     pages.orders = 0
     render()
@@ -806,20 +1078,38 @@ document.addEventListener('change', async e => {
             (taxonomy.items.includes(value) || value === uncategorized)))) throw new Error('分类设置格式不符')
       const validCategories = new Set([...categories(), ...defaultCategories, ...(taxonomy?.items || [])])
       const id = /^[a-f0-9]{24}$/
-      const role = ['消费', '退款', '还款', '资金划转', '收入', '待判定', '排除']
       const validators = {
         categories: (k, v) => id.test(k) && validCategories.has(v),
-        roles: (k, v) => id.test(k) && role.includes(v),
+        roles: (k, v) => id.test(k) && purposes.includes(v),
         links: (k, v) => id.test(k) && (v === null || typeof v === 'string' && id.test(v)),
         merchants: (k, v) => k.startsWith('商户:') && v && validCategories.has(v.category) &&
           Array.isArray(v.excluded) && v.excluded.every(x => typeof x === 'string' && id.test(x)),
         merchantNotes: (k, v) => k.startsWith('商户:') && typeof v === 'string' && v.length <= 500,
+        amounts: (k, v) => id.test(k) && Number.isSafeInteger(v) && v >= 0 && v <= 9999999999,
+        deleted: (k, v) => id.test(k) && v === true,
+        deletedRefunds: (k, v) => id.test(k) && v === true,
+        installments: (k, v) => id.test(k) && v && typeof v.name === 'string' && v.name.length > 0 && v.name.length <= 80 &&
+          Number.isInteger(v.periods) && v.periods >= 1 && v.periods <= 120 &&
+          Number.isSafeInteger(v.amount) && v.amount >= v.periods && v.amount <= 9999999999 &&
+          Number.isInteger(v.paid) && v.paid >= 0 && v.paid <= v.periods &&
+          (v.firstDue === '' || validDate(v.firstDue)) && (v.type === undefined || v.type === 'installment' || v.type === 'consumption' && v.periods === 1) &&
+          (v.type === undefined && v.channel === undefined || channels.includes(v.channel)) &&
+          (v.paidPeriods === undefined || Array.isArray(v.paidPeriods) &&
+            v.paidPeriods.every(index => Number.isInteger(index) && index >= v.paid && index < v.periods)),
+        manualOrders: (k, v) => id.test(k) && v && typeof v.title === 'string' && v.title.length > 0 &&
+          v.title.length <= 80 && validDate(v.date) &&
+          (v.amount === undefined || Number.isSafeInteger(v.amount) && v.amount >= 1 && v.amount <= 9999999999),
         debts: (k, v) => /^\d{4}-(0[1-9]|1[0-2])$/.test(k) && v &&
           Number.isSafeInteger(v.remaining) && Number.isSafeInteger(v.due) && v.due >= 0 && v.due <= v.remaining,
       }
       if (!full || data !== undefined) {
         if (data && !Object.hasOwn(data, 'merchants')) data.merchants = {}
         if (data && !Object.hasOwn(data, 'merchantNotes')) data.merchantNotes = {}
+        if (data && !Object.hasOwn(data, 'amounts')) data.amounts = {}
+        if (data && !Object.hasOwn(data, 'deleted')) data.deleted = {}
+        if (data && !Object.hasOwn(data, 'deletedRefunds')) data.deletedRefunds = {}
+        if (data && !Object.hasOwn(data, 'installments')) data.installments = {}
+        if (data && !Object.hasOwn(data, 'manualOrders')) data.manualOrders = {}
         for (const [key, valid] of Object.entries(validators)) {
           if (!data?.[key] || typeof data[key] !== 'object' || Array.isArray(data[key]) ||
               !Object.entries(data[key]).every(([k, v]) => valid(k, v))) throw new Error('设置格式不符')

@@ -11,15 +11,18 @@
 <header class="top"><div class="brand"><span aria-hidden="true">账</span> 个人账本</div><div class="local">本机读取 · 人民币</div></header>
 <div class="layout">
 <aside><nav aria-label="账本页面">
-<button data-page="stats">消费统计</button>
 <button data-page="calendar">消费日历</button>
-<button data-page="details">月度明细</button>
-<button data-page="debt">分期还款</button>
+<button data-page="details">明细</button>
+<button data-page="debt">待还</button>
 <button data-page="settings">设置</button>
 </nav></aside>
 <main>
-<div class="heading"><div><p class="eyebrow">个人财务</p><h1 id="title">消费统计</h1></div>
-<div class="period"><button id="prev" aria-label="上个月">‹</button><label for="month">账本月份</label><input type="month" id="month"><button id="next" aria-label="下个月">›</button></div></div>
+<div class="heading"><h1 id="title">消费日历</h1>
+<div class="period">
+<label id="scope-control" hidden>时间范围 <select id="detail-scope"><option value="month">按月</option><option value="year">按年</option><option value="all">全部</option></select></label>
+<label id="year-control" hidden>账本年份 <select id="detail-year"></select></label>
+<div class="period" id="month-control"><button id="prev" aria-label="上个月">‹</button><label for="month">账本月份</label><input type="month" id="month"><button id="next" aria-label="下个月">›</button></div>
+</div></div>
 <p id="status" role="status">正在读取账单…</p>
 <section id="view"></section>
 </main>

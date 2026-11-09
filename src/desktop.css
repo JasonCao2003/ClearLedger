@@ -1,4 +1,5 @@
 * { box-sizing: border-box }
+[hidden] { display: none !important }
 :root { color-scheme: light; --ink: #172844; --muted: #53647a; --line: #dbe4f0; --blue: #2147a7; --tint: #edf3ff; --warn: #814600; --paper: #fff; --bg: #f4f7fb }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, "Microsoft YaHei", sans-serif }
 .top { display: flex; align-items: center; justify-content: space-between; padding: 8px clamp(12px, 2vw, 30px); background: #102653; color: white }
@@ -14,7 +15,6 @@ main { min-width: 0; padding: 12px clamp(10px, 2vw, 26px) 16px }
 .heading, .section-heading, .period, .filters, .actions, .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
 .heading, .section-heading { justify-content: space-between }
 .section-heading h2 { margin: 0; min-width: 0; overflow-wrap: anywhere }
-.eyebrow { margin: 0 0 4px; color: var(--blue); font-weight: 700; font-size: 13px }
 h1 { font-size: clamp(23px, 3vw, 30px); margin: 0; line-height: 1.2 }
 h2 { font-size: 17px; margin: 0 0 8px }
 h3 { margin-top: 0 }
@@ -34,7 +34,6 @@ button:hover { background: var(--tint); border-color: #a8bae0 }
 .amount, td { font-variant-numeric: tabular-nums }
 .muted, small, #status { color: var(--muted) }
 .warning { color: var(--warn) }
-.stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px }
 table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left }
 th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere }
 thead th { background: var(--tint) }
@@ -52,9 +51,8 @@ td button, td select { max-width: 100%; min-height: 28px; padding: 2px 5px; over
 .pager { justify-content: flex-end; margin-top: 6px; font-size: 13px }
 .pager button { min-height: 32px }
 .settings-tabs { margin-bottom: 8px }
-.settings-tabs button[aria-pressed="true"] { background: var(--tint); color: var(--blue); font-weight: 700 }
+.settings-tabs button[aria-pressed="true"], #review-filter[aria-pressed="true"] { background: var(--tint); color: var(--blue); font-weight: 700 }
 #category-error:empty, #rename-error:empty { display: none }
-meter { width: 100%; display: block }
 dialog { width: min(920px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink) }
 dialog::backdrop { background: #10265388 }
 details { margin: 8px 0; overflow-wrap: anywhere }
@@ -63,7 +61,6 @@ details { margin: 8px 0; overflow-wrap: anywhere }
 .filters { margin: 6px 0; align-items: end; gap: 6px }
 .filters label { display: grid; gap: 2px; min-width: 0; font-size: 13px }
 .filters input, .filters select { min-width: 0; max-width: 100% }
-#filters input { width: clamp(82px, 12vw, 170px) }
 #debt-error:empty { display: none }
 @media (max-width: 940px) {
   .layout { display: block }
@@ -76,3 +73,19 @@ details { margin: 8px 0; overflow-wrap: anywhere }
   th, td { padding: 3px 4px }
   .card, .panel { padding: 8px }
 }
+
+/* Keep controls together while allowing narrow windows to wrap naturally. */
+#status { margin: 4px 0 8px; font-size: 13px }
+.period label { white-space: nowrap }
+#month-control > button { min-width: 36px }
+#filters label { flex: 1 1 85px }
+#filters label:has(input) { flex: 2 1 135px }
+#filters input, #filters select { width: 100% }
+.panel-tools { margin-bottom: 8px }
+.repayment-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px }
+.repayment-toolbar .settings-tabs { margin: 0 }
+.repayment-summary { column-gap: 16px }
+.repayment-summary strong { margin-inline-start: 4px; color: var(--blue); font-variant-numeric: tabular-nums }
+.calendar tbody tr:nth-child(even) { background: var(--bg) }
+.calendar tbody td { height: 25px }
+.calendar thead th { line-height: 1.25 }
