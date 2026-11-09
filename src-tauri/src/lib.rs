@@ -1,36 +1,19 @@
-mod application;
-mod commands;
-mod domain;
-mod infrastructure;
+mod desktop;
 
 use tauri::Manager;
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
-        .with_target(false)
-        .init();
     tauri::Builder::default()
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
-            let database = infrastructure::db::Database::open(&directory)?;
-            app.manage(application::AppState { database });
-            tracing::info!("Local database initialized");
+            let directory = app.path().app_local_data_dir()?.join("desktop");
+            app.manage(desktop::Database::open(&directory)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_app_status,
-            commands::save_transaction,
-            commands::void_transaction,
-            commands::confirm_transactions,
-            commands::list_transactions,
-            commands::list_transaction_years,
-            commands::get_overview,
-            commands::get_month_detail,
-            commands::scan_refunds,
-            commands::get_refund_report,
-            commands::reject_refund_link
+            desktop::load_ledger,
+            desktop::import_ledger,
+            desktop::save_settings,
         ])
         .run(tauri::generate_context!())
-        .expect("Unable to start ledger desktop");
+        .expect("Unable to start ClearLedger");
 }
