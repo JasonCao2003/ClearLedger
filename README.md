@@ -5,10 +5,10 @@ Windows 单机账本。桌面改版沿用 `ledger` 网页版的界面与记账�
 ## 日常使用
 
 1. 双击 `ledger-desktop.exe` 打开账本。
-2. 在「导入核对」选择支付宝 CSV 或微信 XLSX。可以多选文件，导入后可查看重复记录和跳过条数。
+2. 在「设置 → 导入与备份」选择支付宝 CSV 或微信 XLSX。可以多选文件，导入后可查看重复记录和跳过条数。
 3. 在消费统计、消费日历、月度明细和分期还款之间切换。商户分类与备注在月度明细中管理。
 
-数据库位于 Tauri 的本机应用数据目录，Windows 默认路径为 `%LOCALAPPDATA%\com.jason.personalledger\desktop\ledger.sqlite3`。桌面改版与旧版使用不同的数据库位置。「导入核对」可导出包含流水和设置的完整 JSON 账本，也可只导出核对设置。备份包含个人交易信息，请妥善保存。
+数据库位于 Tauri 的本机应用数据目录，Windows 默认路径为 `%LOCALAPPDATA%\com.jason.personalledger\desktop\ledger.sqlite3`。桌面改版与旧版使用不同的数据库位置。「设置」可管理消费分类，也可导出包含流水和设置的完整 JSON 账本，或只导出核对设置。备份包含个人交易信息，请妥善保存。
 
 ## 从 ledger 网页版迁移
 

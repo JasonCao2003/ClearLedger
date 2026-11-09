@@ -2,17 +2,33 @@ import {invoke} from '@tauri-apps/api/core'
 import {digest, parseLedger} from './import-ledger.js'
 
 const $ = (id) => document.getElementById(id)
-const names = {stats: '消费统计', calendar: '消费日历', details: '月度明细', debt: '分期还款', imports: '导入核对'}
-const categories = ['饮食', '出行', '基本支出', '生活', '娱乐', '学习', '待分类']
+const names = {stats: '消费统计', calendar: '消费日历', details: '月度明细', debt: '分期还款', settings: '设置'}
+const defaultCategories = ['饮食', '出行', '基本支出', '生活', '娱乐', '学习']
+const uncategorized = '待分类'
 const platforms = ['支付宝', '微信', '美团', '京东', '工商银行']
 const current = new Intl.DateTimeFormat('sv-SE', {timeZone: 'Asia/Shanghai'}).format(new Date()).slice(0, 7)
-const emptySettings = () => ({categories: {}, links: {}, roles: {}, debts: {}, merchants: {}, merchantNotes: {}})
+const emptySettings = () => ({
+  categories: {}, links: {}, roles: {}, debts: {}, merchants: {}, merchantNotes: {},
+  taxonomy: {items: [...defaultCategories], aliases: {}},
+})
 let settings = emptySettings()
 let source = {rows: [], reports: []}
 let ledger = []
 let page = 'stats'
+let settingsTab = 'files'
 let filter = {category: '', source: '', state: '', day: '', query: ''}
-let limit = 100
+const pages = {}
+const dialog = $('dialog')
+const outsideDialog = ({clientX, clientY}) => {
+  const {left, right, top, bottom} = dialog.getBoundingClientRect()
+  return clientX < left || clientX > right || clientY < top || clientY > bottom
+}
+let backdropPressed = false
+dialog.addEventListener('pointerdown', e => { backdropPressed = e.target === dialog && outsideDialog(e) })
+dialog.addEventListener('click', e => {
+  if (backdropPressed && e.target === dialog && outsideDialog(e)) dialog.close()
+  backdropPressed = false
+})
 let ready = false
 let importing = false
 let pendingSave = Promise.resolve()
@@ -27,7 +43,7 @@ async function request(command, input) {
 function save() {
   const snapshot = structuredClone(settings)
   pendingSave = pendingSave.then(() => request('save_settings', {settings: snapshot})).catch(() => {
-    $('status').textContent = '数据库保存失败。请导出核对设置，避免丢失当前修改。'
+    $('status').textContent = '数据库保存失败。请在设置中导出核对设置，避免丢失当前修改。'
   })
   rebuild()
   render()
@@ -39,6 +55,11 @@ const month = () => $('month').value || current
 const option = (value, selected) => '<option' + (value === selected ? ' selected' : '') + '>' + esc(value) + '</option>'
 const normalizeMerchant = (name) => name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
 const merchantKey = (name) => '商户:' + normalizeMerchant(name)
+const categories = () => [...settings.taxonomy.items, uncategorized]
+const validCategoryName = (name) => typeof name === 'string' && name === name.trim() &&
+  name.length > 0 && name.length <= 24 && !/[\u0000-\u001f\u007f]/.test(name)
+const knownCategory = (name) => categories().includes(name) ? name :
+  Object.hasOwn(settings.taxonomy.aliases, name) ? settings.taxonomy.aliases[name] : uncategorized
 
 function role(r) {
   if (settings.roles[r.id]) return settings.roles[r.id]
@@ -185,7 +206,8 @@ function rebuild() {
     r.merchantName = [r, ...paid].find(x => x.merchant && x.source !== '工商银行')?.merchant || ''
     const rule = r.merchantName && settings.merchants[merchantKey(r.merchantName)]
     const marked = rule && !rule.excluded.includes(r.id) ? rule.category : ''
-    r.category = settings.categories[r.id] || marked || guessed || '待分类'
+    const automatic = guessed && Object.hasOwn(settings.taxonomy.aliases, guessed) ? settings.taxonomy.aliases[guessed] : guessed
+    r.category = knownCategory(settings.categories[r.id] || marked || automatic || uncategorized)
   }
 }
 
@@ -196,10 +218,37 @@ const needsReview = (r) => r.flags.length || r.role === '待判定' || (r.role =
 const card = (label, value, hint) => '<div class="card"><small>' + label + '</small><strong>' + value + '</strong><small>' + hint + '</small></div>'
 const panel = (title, body) => '<section class="panel"><h2>' + title + '</h2>' + body + '</section>'
 function table(headers, rows, extra = '') {
-  return '<div class="scroll"><table class="' + extra + '"><thead><tr>' + headers.map(x => '<th scope="col">' + x + '</th>').join('') +
-    '</tr></thead><tbody>' + rows.join('') + '</tbody></table></div>'
+  return '<table class="' + extra + '"><thead><tr>' + headers.map(x => '<th scope="col">' + x + '</th>').join('') +
+    '</tr></thead><tbody>' + rows.join('') + '</tbody></table>'
 }
 const tr = (...cells) => '<tr>' + cells.map(x => '<td>' + x + '</td>').join('') + '</tr>'
+const compactHeight = () => window.innerHeight < 740
+function paginate(rows, index, size, id, label = '') {
+  const count = Math.max(1, Math.ceil(rows.length / size))
+  index = Math.min(Math.max(0, index || 0), count - 1)
+  const button = (step, label, disabled) => '<button type="button" data-pager="' + id + '" data-step="' + step + '"' +
+    (disabled ? ' disabled' : '') + '>' + label + '</button>'
+  return {
+    index,
+    rows: rows.slice(index * size, (index + 1) * size),
+    footer: count > 1 ? '<div class="pager" role="group" aria-label="' + label + '分页">' +
+      button(-1, '上一页', index === 0) + '<span aria-live="polite">' + label + '第 ' + (index + 1) + ' / ' + count +
+      ' 页</span>' + button(1, '下一页', index === count - 1) + '</div>' : '',
+  }
+}
+function mainPage(rows, id, size, label) {
+  const result = paginate(rows, pages[id], size, id, label)
+  pages[id] = result.index
+  return result
+}
+function bindPager(id, index, callback) {
+  for (const button of dialog.querySelectorAll('[data-pager="' + id + '"]')) {
+    button.onclick = () => {
+      callback(index + Number(button.dataset.step))
+      dialog.querySelector('[data-pager="' + id + '"]:enabled')?.focus()
+    }
+  }
+}
 
 function stats() {
   const monthly = spend().filter(inMonth)
@@ -211,35 +260,44 @@ function stats() {
   const max = Math.max(...series, 1)
   const coverage = source.reports.filter(r => r.start.slice(0, 7) <= month() && r.end.slice(0, 7) >= month()).map(r => r.source)
   const missing = platforms.filter(x => !coverage.includes(x))
+  const categoryPage = mainPage(categories(), 'category-totals', 7)
+  const monthlyPage = mainPage(months.map((m, i) =>
+    tr('<button data-month="' + m + '">' + m + '</button>', annual.some(r => r.time.startsWith(m)) ? money(series[i]) : '—',
+      '<meter aria-label="' + m + ' 净消费" min="0" max="' + max + '" value="' + series[i] + '"></meter>')), 'months', 7)
   return '<div class="cards">' + card('本月净消费', monthly.length ? money(total(monthly)) : '—', monthly.length + ' 笔消费订单') +
     card('年度净消费', annual.length ? money(total(annual)) : '—', year + ' 年已导入记录') +
     card('本月已还', repaid.length ? money(total(repaid, 'amount')) : '—', '按已识别的还款流水') +
     card('本月待核对', String(roots().filter(r => inMonth(r) && needsReview(r)).length), '统计可能随核对更新') + '</div>' +
     (missing.length ? '<p class="warning">所选月缺少这些来源的流水覆盖迹象：' + missing.join('、') + '。</p>' : '') +
-    panel('分类汇总', table(['分类', '本月净消费', '年度净消费'], categories.map(c => tr(c, money(total(monthly.filter(r => r.category === c))), money(total(annual.filter(r => r.category === c))))))) +
-    panel('月度总消费', table(['月份', '净消费', '年度月度对比'], months.map((m, i) =>
-      tr('<button data-month="' + m + '">' + m + '</button>', annual.some(r => r.time.startsWith(m)) ? money(series[i]) : '—',
-        '<meter aria-label="' + m + ' 净消费" min="0" max="' + max + '" value="' + series[i] + '"></meter>'))))
+    '<div class="stats-grid">' +
+    panel('分类汇总', table(['分类', '本月净消费', '年度净消费'], categoryPage.rows.map(c => tr(esc(c), money(total(monthly.filter(r => r.category === c))), money(total(annual.filter(r => r.category === c)))))) + categoryPage.footer) +
+    panel('月度总消费', table(['月份', '净消费', '年度月度对比'], monthlyPage.rows) + monthlyPage.footer) + '</div>'
 }
 
 function calendar() {
   const [year, m] = month().split('-').map(Number)
   const days = Array.from({length: new Date(year, m, 0).getDate()}, (_, i) => i + 1)
   const monthly = spend().filter(inMonth)
-  return panel('按分类查看每日净消费', '<p class="muted">横向滚动查看整月。选择有记录的日期可查看对应明细。</p>' +
-    table(['分类', ...days.map(d => d + ' 日')], categories.map(c => '<tr><th scope="row">' + c + '</th>' + days.map(d => {
+  const result = mainPage(days, 'days', compactHeight() ? 7 : 13, '日期')
+  const columns = mainPage(categories(), 'calendar-categories', 7, '分类')
+  return panel('按分类查看每日净消费', '<p class="muted">点击金额查看对应订单。</p>' +
+    table(['日期', ...columns.rows.map(esc)], result.rows.map(d => {
       const day = String(d).padStart(2, '0')
-      const rows = monthly.filter(r => r.category === c && r.time.slice(8, 10) === day)
-      return '<td>' + (rows.length ? '<button data-day="' + day + '" data-category="' + c + '">' + money(total(rows)) + '</button>' : '—') + '</td>'
-    }).join('') + '</tr>'), 'calendar'))
+      return '<tr><th scope="row">' + d + ' 日</th>' + columns.rows.map(c => {
+        const rows = monthly.filter(r => r.category === c && r.time.slice(8, 10) === day)
+        const amount = money(total(rows))
+        return '<td>' + (rows.length ? '<button title="' + amount + '" data-day="' + day + '" data-category="' + esc(c) + '">' + amount + '</button>' : '—') + '</td>'
+      }).join('') + '</tr>'
+    }), 'calendar') + '<div class="calendar-pagers">' + columns.footer + result.footer + '</div>')
 }
 
 const label = (r) => r.title || r.merchant || r.kind || r.source
 function detailTable(rows) {
   return table(['时间', '交易', '分类 / 状态', '实付 / 流水金额', '退款', '净消费', '核对'], rows.map(r =>
-    tr(esc(r.time), esc(label(r)) + '<br><small>' + esc([...new Set([r.source, ...r.linked.map(x => x.source)])].join(' · ')) + '</small>',
+    tr(esc(r.time), '<span class="truncate" title="' + esc(label(r)) + '">' + esc(label(r)) + '</span><small class="truncate">' +
+      esc([...new Set([r.source, ...r.linked.map(x => x.source)])].join(' · ')) + '</small>',
       r.role === '消费' ? esc(r.category) : r.role, money(r.amount), r.refund ? money(r.refund) : '—',
-      r.role === '消费' ? money(r.net) : '—', '<button data-id="' + r.id + '">' + (needsReview(r) ? '待核对' : '查看') + '</button>')))
+      r.role === '消费' ? money(r.net) : '—', '<button data-id="' + r.id + '">' + (needsReview(r) ? '待核对' : '查看') + '</button>')), 'transactions')
 }
 function details() {
   const rows = roots().filter(r => inMonth(r) &&
@@ -249,20 +307,20 @@ function details() {
     (!filter.query || [r, ...r.linked].some(x => [label(x), x.tx, x.order].join(' ').toLowerCase().includes(filter.query.toLowerCase()))) &&
     (filter.state === '全部流水' || (filter.state === '待核对' ? needsReview(r) : r.role === '消费')))
     .sort((a, b) => b.time.localeCompare(a.time))
+  const result = mainPage(rows, 'orders', compactHeight() ? 5 : 9)
   const select = (name, caption, choices, defaultLabel) => '<label>' + caption + '<select data-filter="' + name + '">' +
     '<option value="">' + defaultLabel + '</option>' + choices.map(x => option(x, filter[name])).join('') + '</select></label>'
   return panel('归并后的账单', '<form id="filters" class="filters">' +
-    select('category', '分类', categories, '全部分类') + select('source', '来源', platforms, '全部来源') +
+    select('category', '分类', categories(), '全部分类') + select('source', '来源', platforms, '全部来源') +
     select('state', '范围', ['待核对', '全部流水'], '消费订单') +
     '<label>搜索<input name="query" value="' + esc(filter.query) + '" placeholder="商品、商户、订单号"></label><button>搜索</button>' +
-    (filter.day ? '<button type="button" id="clear-day">清除 ' + filter.day + ' 日筛选</button>' : '') + '</form>' +
-    '<div class="actions"><button id="merchants">管理商户分类</button></div>' +
+    '<button type="button" id="merchants">管理商户分类</button>' +
+    (filter.day ? '<button type="button" id="clear-day">清除 ' + filter.day + ' 日</button>' : '') + '</form>' +
     '<p class="muted">共 ' + rows.length + ' 条。本人划转、收入和还款可在「全部流水」查看。</p>' +
-    (rows.length ? detailTable(rows.slice(0, limit)) : '<p>当前筛选没有记录。</p>') +
-    (rows.length > limit ? '<button id="more">再显示 100 条</button>' : ''))
+    (rows.length ? detailTable(result.rows) + result.footer : '<p>当前筛选没有记录。</p>'))
 }
 
-function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
+function manageMerchants(query = '', sortBy = 'count', hideMarked = false, index = 0) {
   const groups = new Map()
   for (const row of spend()) {
     if (!row.merchantName) continue
@@ -272,11 +330,13 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
     group.rows.push(row)
     group.amount += row.amount
   }
-  const ranked = [...groups.entries()]
+  const matches = [...groups.entries()]
     .filter(([key, group]) => (!hideMarked || !settings.merchants[key]) &&
       normalizeMerchant(group.name).includes(normalizeMerchant(query)))
     .sort(([, a], [, b]) => (sortBy === 'amount' ? b.amount - a.amount : b.rows.length - a.rows.length) ||
       a.name.localeCompare(b.name, 'zh-CN'))
+  const result = paginate(matches, index, compactHeight() ? 6 : 9, 'merchant-list')
+  const ranked = result.rows
   $('dialog-content').innerHTML = '<h2 id="dialog-title">商户分类</h2>' +
     '<p class="muted">统计全部已导入月份中有商户名称的归并订单。订单总额为退款前实付金额之和。</p>' +
     '<form id="merchant-search" class="filters"><label>商户名称<input name="query" value="' +
@@ -290,10 +350,11 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
       return tr('<button data-merchant-detail="' + index + '">' + esc(group.name) + '</button>',
         group.rows.length, money(group.amount), '<select data-merchant="' + index +
         '" aria-label="' + esc(group.name + '的分类标记') + '"><option value="">未标记</option>' +
-        categories.map(c => option(c, marked)).join('') + '</select>',
+        categories().map(c => option(c, marked)).join('') + '</select>',
         '<button data-merchant-note="' + index + '" aria-label="' + esc(group.name + '的备注') + '">' +
         (settings.merchantNotes[key] ? '编辑备注' : '添加备注') + '</button>')
-    })) : '<p>' + (hideMarked ? '没有匹配的未标记商户。' : '没有匹配的商户。') + '</p>')
+    })) + result.footer : '<p>' + (hideMarked ? '没有匹配的未标记商户。' : '没有匹配的商户。') + '</p>')
+  bindPager('merchant-list', result.index, next => manageMerchants(query, sortBy, hideMarked, next))
   const search = $('merchant-search')
   const applySearch = (focus) => {
     manageMerchants(search.elements.query.value.trim(), search.elements.sort.value, hideMarked)
@@ -309,7 +370,7 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
     button.onclick = () => {
       const [key] = ranked[Number(button.dataset.merchantDetail)]
       showMerchant(key, () => {
-        manageMerchants(query, sortBy, hideMarked)
+        manageMerchants(query, sortBy, hideMarked, result.index)
         $('dialog-content').querySelector('[data-merchant-detail="' + button.dataset.merchantDetail + '"]')?.focus()
       })
     }
@@ -318,7 +379,7 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
     button.onclick = () => {
       const [key, group] = ranked[Number(button.dataset.merchantNote)]
       editMerchantNote(key, group.name, () => {
-        manageMerchants(query, sortBy, hideMarked)
+        manageMerchants(query, sortBy, hideMarked, result.index)
         $('dialog-content').querySelector('[data-merchant-note="' + button.dataset.merchantNote + '"]')?.focus()
       })
     }
@@ -345,7 +406,7 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
         settings.merchants[key] = {category, excluded: [...previous]}
       }
       save()
-      manageMerchants(query, sortBy, hideMarked)
+      manageMerchants(query, sortBy, hideMarked, result.index)
       const next = $('dialog-content').querySelector('[data-merchant="' + select.dataset.merchant + '"]') || $('toggle-marked')
       next.focus()
     }
@@ -353,33 +414,34 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false) {
   if (!$('dialog').open) $('dialog').showModal()
 }
 
-function showMerchant(key, back, limit = 100) {
+function showMerchant(key, back, index = 0) {
   const rows = spend().filter(row => row.merchantName && merchantKey(row.merchantName) === key)
     .sort((a, b) => b.time.localeCompare(a.time))
   const name = rows[0]?.merchantName || '商户'
   const note = settings.merchantNotes[key]
-  $('dialog-content').innerHTML = '<div class="actions"><button id="merchant-back">返回商户列表</button>' +
-    '<button id="edit-merchant-note">' + (note ? '编辑备注' : '添加备注') + '</button></div>' +
-    '<h2 id="dialog-title">' + esc(name) + '</h2><p class="muted">全部已导入月份 · ' + rows.length + ' 笔归并订单 · ' +
+  const result = paginate(rows, index, compactHeight() ? 4 : 7, 'merchant-orders')
+  $('dialog-content').innerHTML = '<div class="section-heading"><h2 id="dialog-title">' + esc(name) + '</h2>' +
+    '<div class="actions"><button id="merchant-back">返回商户列表</button>' +
+    '<button id="edit-merchant-note">' + (note ? '编辑备注' : '添加备注') + '</button></div></div>' +
+    '<p class="muted">全部已导入月份 · ' + rows.length + ' 笔归并订单 · ' +
     esc(settings.merchants[key]?.category || '未标记') + '</p>' +
-    (note ? '<p class="merchant-note"><strong>商户备注</strong><br>' + esc(note) + '</p>' : '') + '<div class="cards">' +
+    (note ? '<p class="truncate" title="' + esc(note) + '"><strong>商户备注</strong> ' + esc(note) + '</p>' : '') + '<div class="cards">' +
     card('订单总额', money(total(rows, 'amount')), '退款前实付') +
     card('累计退款', money(total(rows, 'refund')), '已绑定的退款') +
     card('净消费', money(total(rows)), '扣除退款') + '</div>' +
-    (rows.length ? detailTable(rows.slice(0, limit)) : '<p>该商户当前没有消费订单。</p>') +
-    (rows.length > limit ? '<button id="merchant-more">再显示 100 条</button>' : '')
+    (rows.length ? detailTable(result.rows) + result.footer : '<p>该商户当前没有消费订单。</p>')
   $('merchant-back').onclick = back
   $('merchant-back').focus()
   $('edit-merchant-note').onclick = () => editMerchantNote(key, name, () => {
-    showMerchant(key, back, limit)
+    showMerchant(key, back, result.index)
     $('edit-merchant-note').focus()
   })
-  if ($('merchant-more')) $('merchant-more').onclick = () => showMerchant(key, back, limit + 100)
+  bindPager('merchant-orders', result.index, next => showMerchant(key, back, next))
   for (const button of $('dialog-content').querySelectorAll('[data-id]')) {
     button.onclick = e => {
       e.stopPropagation()
       inspect(button.dataset.id, () => {
-        showMerchant(key, back, limit)
+        showMerchant(key, back, result.index)
         $('dialog-content').querySelector('[data-id="' + button.dataset.id + '"]')?.focus()
       })
     }
@@ -409,6 +471,7 @@ function debt() {
   const rows = roots().filter(r => r.role === '还款')
   const monthly = rows.filter(inMonth).sort((a, b) => b.time.localeCompare(a.time))
   const snapshot = settings.debts[month()]
+  const result = mainPage(monthly, 'repayments', compactHeight() ? 3 : 6)
   return '<div class="cards">' +
     card('总待还', snapshot ? money(snapshot.remaining) : '待补录', '所选月的手工余额快照') +
     card('本月待还', snapshot ? money(snapshot.due) : '待补录', '所选月应还未还金额') +
@@ -418,24 +481,99 @@ function debt() {
       '<form id="debt-form" class="filters"><label>总待还（元）<input name="remaining" type="number" min="0" step=".01" required value="' +
       (snapshot ? snapshot.remaining / 100 : '') + '"></label><label>本月待还（元）<input name="due" type="number" min="0" step=".01" required value="' +
       (snapshot ? snapshot.due / 100 : '') + '"></label><button class="primary">保存余额</button></form><p id="debt-error" class="warning" role="alert"></p>') +
-    panel('本月还款流水', monthly.length ? detailTable(monthly) : '<p>该月未识别到还款流水。</p>')
+    panel('本月还款流水', monthly.length ? detailTable(result.rows) + result.footer : '<p>该月未识别到还款流水。</p>')
 }
 
 function imports() {
   const disabled = importing || !ready ? ' disabled' : ''
+  const result = mainPage(source.reports, 'files', compactHeight() ? 6 : 10)
+  const picker = (id, label, extensions, multiple = false) => '<button type="button" data-picker="' + id + '"' + disabled + '>' +
+    label + '</button><input hidden type="file" id="' + id + '" accept="' + extensions + '"' + (multiple ? ' multiple' : '') + '>'
   return panel('本地账单文件', '<p class="muted">选择支付宝 CSV 或微信 XLSX，可一次选择多个文件。日期列显示读取到的首末交易。</p>' +
-    '<div class="actions"><label>导入账单 <input type="file" id="import-files" accept=".csv,.xlsx" multiple' + disabled + '></label>' +
+    '<div class="actions">' + picker('import-files', '导入账单', '.csv,.xlsx', true) +
     '<button id="export"' + disabled + '>导出核对设置</button><button id="export-ledger"' + disabled + '>导出完整账本</button>' +
-    '<label>恢复核对设置 <input type="file" id="restore" accept=".json,application/json"' + disabled + '></label>' +
-    '<label>导入历史数据或账本备份 <input type="file" id="restore-ledger" accept=".json,application/json"' + disabled + '></label></div>') +
-    panel('文件读取结果', table(['来源', '文件', '交易范围', '已读取', '重复流水', '跳过', '结果'], source.reports.map(r =>
-      tr(esc(r.source), esc(r.file), r.start ? r.start + ' 至 ' + r.end : '—', r.count, r.duplicates, r.skipped,
-        r.error ? '读取失败（' + esc(r.error) + '）' : r.skipped ? '部分记录需检查' : '已读取'))))
+    picker('restore', '恢复核对设置', '.json,application/json') +
+    picker('restore-ledger', '导入历史或备份', '.json,application/json') + '</div>') +
+    panel('文件读取结果', table(['来源', '文件', '交易范围', '已读取', '重复', '跳过', '结果'], result.rows.map(r =>
+      tr(esc(r.source), '<span class="truncate" title="' + esc(r.file) + '">' + esc(r.file) + '</span>',
+        r.start ? r.start + ' 至 ' + r.end : '—', r.count, r.duplicates, r.skipped,
+        r.error ? '读取失败（' + esc(r.error) + '）' : r.skipped ? '部分记录需检查' : '已读取')), 'files') + result.footer)
 }
 
-function inspect(id, back) {
+function settingsPage() {
+  const tabs = [['files', '导入与备份'], ['categories', '分类管理']]
+  return '<div class="actions settings-tabs" aria-label="设置分区">' + tabs.map(([id, label]) =>
+    '<button type="button" data-settings-tab="' + id + '" aria-pressed="' + (id === settingsTab) + '">' + label + '</button>'
+  ).join('') + '</div>' + (settingsTab === 'categories' ? categorySettings() : imports())
+}
+
+function categorySettings() {
+  const orders = new Map()
+  for (const row of spend()) orders.set(row.category, (orders.get(row.category) || 0) + 1)
+  const result = mainPage(categories(), 'category-settings', compactHeight() ? 5 : 8)
+  return panel('消费分类', '<form id="add-category" class="filters"><label>分类名称' +
+    '<input name="name" maxlength="24" required></label><button class="primary">新增分类</button></form>' +
+    '<p id="category-error" class="warning" role="alert"></p>' +
+    table(['分类', '订单数', '操作'], result.rows.map(name => tr(esc(name), orders.get(name) || 0,
+      name === uncategorized ? '系统分类' : '<div class="actions"><button data-edit-category="' + esc(name) +
+      '">改名</button><button data-delete-category="' + esc(name) + '">删除</button></div>'))) + result.footer)
+}
+
+function changeCategory(from, to) {
+  const {items, aliases} = settings.taxonomy
+  if (!from) {
+    items.push(to)
+    if (defaultCategories.includes(to)) delete aliases[to]
+  } else {
+    const index = items.indexOf(from)
+    if (index < 0) return
+    if (!to) {
+      for (const row of spend()) if (row.category === from) settings.categories[row.id] = uncategorized
+    }
+    items.splice(index, 1, ...(to ? [to] : []))
+    for (const original of defaultCategories) {
+      if ((aliases[original] || original) === from) aliases[original] = to || uncategorized
+    }
+    for (const [id, category] of Object.entries(settings.categories)) {
+      if (category === from) settings.categories[id] = to || uncategorized
+    }
+    for (const [key, rule] of Object.entries(settings.merchants)) {
+      if (rule.category !== from) continue
+      if (to) rule.category = to
+      else delete settings.merchants[key]
+    }
+    if (filter.category === from) {
+      filter.category = to || uncategorized
+      pages.orders = 0
+    }
+  }
+  save()
+}
+
+function renameCategory(name) {
+  $('dialog-content').innerHTML = '<h2 id="dialog-title">修改分类名称</h2>' +
+    '<form id="rename-category" class="filters"><label>分类名称<input name="name" maxlength="24" required value="' +
+    esc(name) + '"></label><button class="primary">保存名称</button></form><p id="rename-error" class="warning" role="alert"></p>'
+  if (!dialog.open) dialog.showModal()
+  const form = $('rename-category')
+  form.elements.name.select()
+  form.onsubmit = e => {
+    e.preventDefault()
+    const next = form.elements.name.value.trim()
+    if (next === name) { dialog.close(); return }
+    if (!validCategoryName(next) || categories().includes(next)) {
+      $('rename-error').textContent = '请输入未使用的分类名称（1–24 个字符）。'
+      return
+    }
+    changeCategory(name, next)
+    dialog.close()
+  }
+}
+
+function inspect(id, back, index = 0) {
   const row = ledger.find(r => r.id === id)
   if (!row) return
+  const result = paginate([row, ...row.linked], index, 1, 'sources')
   const options = ['消费', '退款', '还款', '资金划转', '收入', '待判定', '排除']
   const raw = (r) => '<details><summary>' + esc(r.source + ' · ' + r.time + ' · ' + money(r.amount) + (r.reason ? ' · ' + r.reason : '')) +
     '</summary><p>' + esc([r.kind, r.state, r.merchant, r.title, r.method, r.note].filter(Boolean).join(' · ')) +
@@ -453,13 +591,14 @@ function inspect(id, back) {
     '<div class="filters"><label>交易用途<select id="role"><option value="">自动识别（当前 ' + esc(row.role) + '）</option>' +
     options.map(x => option(x, settings.roles[id])).join('') + '</select></label>' +
     (row.role === '消费' ? '<label>消费分类<select id="category"><option value="">自动分类（当前 ' + esc(row.category) + '）</option>' +
-    categories.map(x => option(x, settings.categories[id])).join('') + '</select></label>' : '') + '</div>' +
-    '<h3>来源流水</h3>' + [row, ...row.linked].map(raw).join('') +
+    categories().map(x => option(x, settings.categories[id])).join('') + '</select></label>' : '') + '</div>' +
+    '<h3>来源流水</h3>' + result.rows.map(raw).join('') + result.footer +
     '<form class="filters" id="link-form"><label>关联到消费订单<input name="target" required list="candidates" placeholder="选择候选或粘贴核对编号"></label>' +
     '<datalist id="candidates">' + candidates.map(p => '<option value="' + p.id + '">' + esc(p.source + ' ' + p.time + ' ' + money(p.amount) + ' ' + label(p)) + '</option>').join('') +
     '</datalist><button>确认关联</button></form><p id="link-error" class="warning" role="alert"></p>'
   const modal = $('dialog')
   if (!modal.open) modal.showModal()
+  bindPager('sources', result.index, next => inspect(id, back, next))
   if (back) {
     $('order-back').onclick = back
     $('order-back').focus()
@@ -469,7 +608,7 @@ function inspect(id, back) {
       e.stopPropagation()
       settings.links[button.dataset.split] = null
       save()
-      inspect(id, back)
+      inspect(id, back, result.index)
     }
   }
   $('role').addEventListener('change', e => {
@@ -504,12 +643,13 @@ function render() {
     if (button.dataset.page === page) button.setAttribute('aria-current', 'page')
     else button.removeAttribute('aria-current')
   })
-  $('view').innerHTML = {stats, calendar, details, debt, imports}[page]()
+  $('view').innerHTML = {stats, calendar, details, debt, settingsPage}[page]()
 }
 function setMonth(value) {
+  if (value.slice(0, 4) !== month().slice(0, 4)) pages.months = 0
   $('month').value = value
   filter.day = ''
-  limit = 100
+  pages.days = pages.orders = pages.repayments = 0
   render()
 }
 function shiftMonth(step) {
@@ -519,7 +659,11 @@ function shiftMonth(step) {
 }
 $('prev').onclick = () => shiftMonth(-1)
 $('next').onclick = () => shiftMonth(1)
-$('month').onchange = () => setMonth(month())
+$('month').onchange = () => {
+  pages.months = 0
+  setMonth(month())
+}
+window.matchMedia('(max-height: 739px)').addEventListener('change', render)
 
 async function reload() {
   try {
@@ -530,7 +674,7 @@ async function reload() {
     rebuild()
     const errors = source.reports.filter(r => r.error || r.skipped).length
     $('status').textContent = '已读取 ' + source.reports.length + ' 份文件 · ' + ledger.length + ' 条去重流水' +
-      (errors ? ' · ' + errors + ' 份文件有导入异常，请查看导入核对' : '')
+      (errors ? ' · ' + errors + ' 份文件有导入异常，请在设置中查看' : '')
   } catch {
     $('status').textContent = '无法读取本机账本数据库，请关闭程序后重新打开。'
   }
@@ -569,26 +713,53 @@ document.addEventListener('click', e => {
   const button = e.target.closest('button')
   if (!button) return
   const {page: nextPage, id, day, category, month: nextMonth} = button.dataset
+  if (button.dataset.settingsTab) {
+    settingsTab = button.dataset.settingsTab
+    render()
+    document.querySelector('[data-settings-tab="' + settingsTab + '"]')?.focus()
+  }
+  if (button.dataset.editCategory) renameCategory(button.dataset.editCategory)
+  if (button.dataset.deleteCategory) {
+    const name = button.dataset.deleteCategory
+    if (window.confirm('删除「' + name + '」？对应订单将归为待分类，商户分类标记会清除。')) changeCategory(name, '')
+  }
+  if (button.dataset.pager && !dialog.contains(button)) {
+    const key = button.dataset.pager
+    pages[key] += Number(button.dataset.step)
+    render()
+    document.querySelector('[data-pager="' + key + '"]:enabled')?.focus()
+  }
+  if (button.dataset.picker) $(button.dataset.picker).click()
   if (nextPage) { page = nextPage; render() }
   if (id) inspect(id)
   if (day) {
     page = 'details'
     filter = {category, source: '', state: '', day, query: ''}
-    limit = 100
+    pages.orders = 0
     render()
   }
   if (nextMonth) setMonth(nextMonth)
-  if (button.id === 'clear-day') { filter.day = ''; render() }
-  if (button.id === 'more') { limit += 100; render() }
+  if (button.id === 'clear-day') { filter.day = ''; pages.orders = 0; render() }
   if (button.id === 'merchants') manageMerchants()
   if (button.id === 'export') download('账本核对设置-' + current + '.json', settings)
   if (button.id === 'export-ledger') download('完整账本-' + current + '.json', {rows: source.rows, reports: source.reports, settings})
 })
 document.addEventListener('submit', e => {
+  if (e.target.id === 'add-category') {
+    e.preventDefault()
+    const name = new FormData(e.target).get('name').trim()
+    if (!validCategoryName(name) || categories().includes(name) || settings.taxonomy.items.length >= 100) {
+      $('category-error').textContent = '请输入未使用的分类名称（1–24 个字符，最多 100 类）。'
+      return
+    }
+    pages['category-settings'] = Math.floor(settings.taxonomy.items.length / (compactHeight() ? 5 : 8))
+    changeCategory('', name)
+    $('add-category').elements.name.focus()
+  }
   if (e.target.id === 'filters') {
     e.preventDefault()
     filter.query = new FormData(e.target).get('query').trim()
-    limit = 100
+    pages.orders = 0
     render()
   }
   if (e.target.id === 'debt-form') {
@@ -609,7 +780,7 @@ document.addEventListener('change', async e => {
   if (name) {
     filter[name] = e.target.value
     filter.query = new FormData(e.target.form).get('query').trim()
-    limit = 100
+    pages.orders = 0
     render()
     document.querySelector('[data-filter="' + name + '"]')?.focus()
   }
@@ -624,13 +795,21 @@ document.addEventListener('change', async e => {
       const bytes = await file.arrayBuffer()
       const content = JSON.parse(new TextDecoder().decode(bytes))
       const data = full ? content.settings : content
+      const taxonomy = data?.taxonomy
+      if (taxonomy !== undefined && (!taxonomy || !Array.isArray(taxonomy.items) ||
+          taxonomy.items.length > 100 || new Set(taxonomy.items).size !== taxonomy.items.length ||
+          !taxonomy.items.every(name => validCategoryName(name) && name !== uncategorized) ||
+          !taxonomy.aliases || typeof taxonomy.aliases !== 'object' || Array.isArray(taxonomy.aliases) ||
+          !Object.entries(taxonomy.aliases).every(([key, value]) => defaultCategories.includes(key) &&
+            (taxonomy.items.includes(value) || value === uncategorized)))) throw new Error('分类设置格式不符')
+      const validCategories = new Set([...categories(), ...defaultCategories, ...(taxonomy?.items || [])])
       const id = /^[a-f0-9]{24}$/
       const role = ['消费', '退款', '还款', '资金划转', '收入', '待判定', '排除']
       const validators = {
-        categories: (k, v) => id.test(k) && categories.includes(v),
+        categories: (k, v) => id.test(k) && validCategories.has(v),
         roles: (k, v) => id.test(k) && role.includes(v),
         links: (k, v) => id.test(k) && (v === null || typeof v === 'string' && id.test(v)),
-        merchants: (k, v) => k.startsWith('商户:') && v && categories.includes(v.category) &&
+        merchants: (k, v) => k.startsWith('商户:') && v && validCategories.has(v.category) &&
           Array.isArray(v.excluded) && v.excluded.every(x => typeof x === 'string' && id.test(x)),
         merchantNotes: (k, v) => k.startsWith('商户:') && typeof v === 'string' && v.length <= 500,
         debts: (k, v) => /^\d{4}-(0[1-9]|1[0-2])$/.test(k) && v &&
@@ -644,14 +823,21 @@ document.addEventListener('change', async e => {
               !Object.entries(data[key]).every(([k, v]) => valid(k, v))) throw new Error('设置格式不符')
         }
       }
+      const merged = {...settings}
+      if (data) {
+        for (const key of Object.keys(validators)) merged[key] = {...settings[key], ...data[key]}
+        if (taxonomy) {
+          const referenced = new Set([...Object.values(merged.categories), ...Object.values(merged.merchants).map(rule => rule.category)])
+          const items = [...new Set([...taxonomy.items, ...settings.taxonomy.items.filter(name =>
+            referenced.has(name) && !defaultCategories.includes(name))])]
+          if (items.length > 100) throw new Error('合并后的分类超过 100 类')
+          merged.taxonomy = {items, aliases: taxonomy.aliases}
+        }
+      }
       if (full) {
         if (!Array.isArray(content.rows) || !Array.isArray(content.reports)) throw new Error('账本格式不符')
         if (!window.confirm('导入账本流水和核对设置？相同设置将使用备份值。')) return
         if (!content.rows.length && !content.reports.length && !data) return
-        const merged = {...settings}
-        if (data) {
-          for (const key of Object.keys(validators)) merged[key] = {...settings[key], ...data[key]}
-        }
         importing = true
         render()
         try {
@@ -667,7 +853,7 @@ document.addEventListener('change', async e => {
         }
         await reload()
       } else if (window.confirm('用备份合并本机设置？相同项目将使用备份值。')) {
-        for (const key of Object.keys(validators)) settings[key] = {...settings[key], ...data[key]}
+        settings = merged
         save()
       }
     } catch (error) { $('status').textContent = '无法导入备份：' + (error.message || '格式不符') }

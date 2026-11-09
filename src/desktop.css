@@ -1,55 +1,78 @@
 * { box-sizing: border-box }
 :root { color-scheme: light; --ink: #172844; --muted: #53647a; --line: #dbe4f0; --blue: #2147a7; --tint: #edf3ff; --warn: #814600; --paper: #fff; --bg: #f4f7fb }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, "Microsoft YaHei", sans-serif }
-.top { display: flex; align-items: center; justify-content: space-between; padding: 16px clamp(16px, 4vw, 56px); background: #102653; color: white }
+.top { display: flex; align-items: center; justify-content: space-between; padding: 8px clamp(12px, 2vw, 30px); background: #102653; color: white }
 .brand { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 10px }
 .brand span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #3158b5; font-size: 15px }
 .local { color: #dbe8ff; font-size: 13px }
-.layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); max-width: 1600px; margin: auto }
-aside { padding: 32px 12px; border-right: 1px solid var(--line) }
+.layout { display: grid; grid-template-columns: 140px minmax(0, 1fr); max-width: 1600px; margin: auto }
+aside { padding: 14px 8px; border-right: 1px solid var(--line) }
 nav { display: grid; gap: 8px }
 nav button { text-align: left; background: transparent; border-color: transparent }
 nav button[aria-current="page"] { background: var(--tint); color: var(--blue); font-weight: 700 }
-main { min-width: 0; padding: 28px clamp(14px, 4vw, 48px) 48px }
-.heading, .period, .filters, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
-.heading { justify-content: space-between; gap: 18px }
+main { min-width: 0; padding: 12px clamp(10px, 2vw, 26px) 16px }
+.heading, .section-heading, .period, .filters, .actions, .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+.heading, .section-heading { justify-content: space-between }
+.section-heading h2 { margin: 0; min-width: 0; overflow-wrap: anywhere }
 .eyebrow { margin: 0 0 4px; color: var(--blue); font-weight: 700; font-size: 13px }
-h1 { font-size: clamp(25px, 4vw, 36px); margin: 0; line-height: 1.2 }
-h2 { font-size: 18px; margin: 0 0 12px }
+h1 { font-size: clamp(23px, 3vw, 30px); margin: 0; line-height: 1.2 }
+h2 { font-size: 17px; margin: 0 0 8px }
 h3 { margin-top: 0 }
-button, input, select, textarea { font: inherit; color: inherit; min-height: 44px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; background: var(--paper) }
+p { margin: 7px 0 }
+button, input, select, textarea { font: inherit; color: inherit; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--paper) }
+button { white-space: nowrap }
+button:disabled { opacity: .55; cursor: default }
 button, select, summary { cursor: pointer }
 button:hover { background: var(--tint); border-color: #a8bae0 }
 :focus-visible { outline: 3px solid #315bd1; outline-offset: 2px }
 .primary { background: var(--blue); color: white }
 .primary:hover { background: #163780 }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 12px; margin-bottom: 14px }
-.card, .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; margin-bottom: 14px }
+.cards { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin-bottom: 8px }
+.card, .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; margin-bottom: 8px }
 .card { margin: 0 }
-.card strong { display: block; font-size: clamp(19px, 2vw, 27px); margin: 4px 0 }
+.card strong { display: block; font-size: clamp(15px, 1.8vw, 24px); margin: 2px 0; overflow-wrap: anywhere }
 .amount, td { font-variant-numeric: tabular-nums }
 .muted, small, #status { color: var(--muted) }
 .warning { color: var(--warn) }
-.scroll { overflow: auto; max-height: 65vh }
-table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: left }
-th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle }
-thead th { position: sticky; top: 0; background: var(--tint); white-space: nowrap; z-index: 1 }
-.calendar tbody th { position: sticky; left: 0; background: var(--paper); z-index: 1; min-width: 96px }
-.calendar thead th:first-child { position: sticky; left: 0; z-index: 2 }
-.calendar td { text-align: center; min-width: 65px }
-.calendar td button { background: var(--tint); color: var(--blue) }
-meter { width: min(220px, 23vw); display: block }
-dialog { width: min(760px, calc(100vw - 24px)); max-height: 88vh; padding: 22px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink) }
+.stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px }
+table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left }
+th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere }
+thead th { background: var(--tint) }
+td button, td select { max-width: 100%; min-height: 28px; padding: 2px 5px; overflow: hidden; text-overflow: ellipsis }
+.transactions th:nth-child(1) { width: 16% }
+.transactions th:nth-child(2) { width: 29% }
+.transactions th:last-child { width: 12% }
+.files th:nth-child(2) { width: 27% }
+.files th:nth-child(3) { width: 23% }
+.calendar :is(th, td) { text-align: center; padding-inline: 3px }
+.calendar th:first-child { width: 9% }
+.calendar td button { background: var(--tint); color: var(--blue); font-size: clamp(11px, 1.3vw, 15px) }
+.truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pager { justify-content: flex-end; margin-top: 6px; font-size: 13px }
+.pager button { min-height: 32px }
+.calendar-pagers { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px 18px }
+.settings-tabs { margin-bottom: 8px }
+.settings-tabs button[aria-pressed="true"] { background: var(--tint); color: var(--blue); font-weight: 700 }
+#category-error:empty, #rename-error:empty { display: none }
+meter { width: 100%; display: block }
+dialog { width: min(920px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink) }
 dialog::backdrop { background: #10265388 }
 details { margin: 8px 0; overflow-wrap: anywhere }
-.merchant-note { white-space: pre-wrap; overflow-wrap: anywhere }
 #merchant-note-text { display: block; width: 100%; resize: vertical; margin: 6px 0 12px }
 #merchant-note-form { margin-bottom: 12px }
-.filters { margin: 10px 0; align-items: end }
-.filters label { display: grid; gap: 3px }
-@media (max-width: 720px) {
+.filters { margin: 6px 0; align-items: end; gap: 6px }
+.filters label { display: grid; gap: 2px; min-width: 0; font-size: 13px }
+.filters input, .filters select { min-width: 0; max-width: 100% }
+#filters input { width: clamp(82px, 12vw, 170px) }
+#debt-error:empty { display: none }
+@media (max-width: 940px) {
   .layout { display: block }
-  aside { padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line) }
+  aside { padding: 3px 8px; border-right: 0; border-bottom: 1px solid var(--line) }
   nav { display: flex; flex-wrap: wrap; gap: 4px }
-  main { padding-top: 20px }
+  main { padding-top: 8px }
+}
+@media (max-width: 720px) {
+  body { font-size: 13px }
+  th, td { padding: 3px 4px }
+  .card, .panel { padding: 8px }
 }
