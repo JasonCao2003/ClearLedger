@@ -278,17 +278,17 @@ function calendar() {
   const [year, m] = month().split('-').map(Number)
   const days = Array.from({length: new Date(year, m, 0).getDate()}, (_, i) => i + 1)
   const monthly = spend().filter(inMonth)
-  const result = mainPage(days, 'days', compactHeight() ? 7 : 13, '日期')
-  const columns = mainPage(categories(), 'calendar-categories', 7, '分类')
+  const result = mainPage(days, 'days', Math.ceil(days.length / 2), '日期')
+  const columns = categories()
   return panel('按分类查看每日净消费', '<p class="muted">点击金额查看对应订单。</p>' +
-    table(['日期', ...columns.rows.map(esc)], result.rows.map(d => {
+    table(['日期', ...columns.map(esc)], result.rows.map(d => {
       const day = String(d).padStart(2, '0')
-      return '<tr><th scope="row">' + d + ' 日</th>' + columns.rows.map(c => {
+      return '<tr><th scope="row">' + d + ' 日</th>' + columns.map(c => {
         const rows = monthly.filter(r => r.category === c && r.time.slice(8, 10) === day)
         const amount = money(total(rows))
         return '<td>' + (rows.length ? '<button title="' + amount + '" data-day="' + day + '" data-category="' + esc(c) + '">' + amount + '</button>' : '—') + '</td>'
       }).join('') + '</tr>'
-    }), 'calendar') + '<div class="calendar-pagers">' + columns.footer + result.footer + '</div>')
+    }), 'calendar') + result.footer)
 }
 
 const label = (r) => r.title || r.merchant || r.kind || r.source
@@ -347,12 +347,14 @@ function manageMerchants(query = '', sortBy = 'count', hideMarked = false, index
     (hideMarked ? '显示已标记' : '隐藏已标记') + '</button></form>' +
     (ranked.length ? table(['商户', '订单数', '订单总额', '分类标记', '备注'], ranked.map(([key, group], index) => {
       const marked = settings.merchants[key]?.category
+      const note = settings.merchantNotes[key]
       return tr('<button data-merchant-detail="' + index + '">' + esc(group.name) + '</button>',
         group.rows.length, money(group.amount), '<select data-merchant="' + index +
         '" aria-label="' + esc(group.name + '的分类标记') + '"><option value="">未标记</option>' +
         categories().map(c => option(c, marked)).join('') + '</select>',
-        '<button data-merchant-note="' + index + '" aria-label="' + esc(group.name + '的备注') + '">' +
-        (settings.merchantNotes[key] ? '编辑备注' : '添加备注') + '</button>')
+        '<button data-merchant-note="' + index + '" aria-label="' +
+        esc(note ? group.name + '的备注：' + note + '，点击编辑' : '添加' + group.name + '的备注') + '"' +
+        (note ? ' title="' + esc(note) + '"' : '') + '>' + esc(note || '添加') + '</button>')
     })) + result.footer : '<p>' + (hideMarked ? '没有匹配的未标记商户。' : '没有匹配的商户。') + '</p>')
   bindPager('merchant-list', result.index, next => manageMerchants(query, sortBy, hideMarked, next))
   const search = $('merchant-search')
@@ -643,7 +645,7 @@ function render() {
     if (button.dataset.page === page) button.setAttribute('aria-current', 'page')
     else button.removeAttribute('aria-current')
   })
-  $('view').innerHTML = {stats, calendar, details, debt, settingsPage}[page]()
+  $('view').innerHTML = {stats, calendar, details, debt, settings: settingsPage}[page]()
 }
 function setMonth(value) {
   if (value.slice(0, 4) !== month().slice(0, 4)) pages.months = 0

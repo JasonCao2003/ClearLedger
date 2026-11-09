@@ -45,12 +45,12 @@ td button, td select { max-width: 100%; min-height: 28px; padding: 2px 5px; over
 .files th:nth-child(2) { width: 27% }
 .files th:nth-child(3) { width: 23% }
 .calendar :is(th, td) { text-align: center; padding-inline: 3px }
-.calendar th:first-child { width: 9% }
-.calendar td button { background: var(--tint); color: var(--blue); font-size: clamp(11px, 1.3vw, 15px) }
+.calendar th:first-child { width: 3.25rem }
+.calendar td button { background: var(--tint); color: var(--blue); font-size: clamp(11px, 1.3vw, 15px); min-height: 24px; padding-block: 0 }
+.calendar tbody :is(th, td) { padding-block: 1px }
 .truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .pager { justify-content: flex-end; margin-top: 6px; font-size: 13px }
 .pager button { min-height: 32px }
-.calendar-pagers { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px 18px }
 .settings-tabs { margin-bottom: 8px }
 .settings-tabs button[aria-pressed="true"] { background: var(--tint); color: var(--blue); font-weight: 700 }
 #category-error:empty, #rename-error:empty { display: none }
